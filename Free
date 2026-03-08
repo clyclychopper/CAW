@@ -1384,15 +1384,19 @@ end
 
 local function walkToTile(targetX, targetY)
     if not movement then 
-        warn("[PTHT] ❌ walkToTile: movement is nil")
+        warn("[PTHT] walkToTile: movement is nil")
         return false 
+    end
+    if not movement.Position then
+        warn("[PTHT] walkToTile: movement.Position is nil")
+        return false
     end
     if not PTHT_Running then return false end
 
-    local startX = math.round(movement.Position.X / TILE_SIZE)
+        local startX = math.round(movement.Position.X / TILE_SIZE)
     local startY = math.round(movement.Position.Y / TILE_SIZE)
 
-    print("🚶 [PTHT] Walking ("..tostring(startX)..","..tostring(startY)..") -> ("..tostring(targetX)..","..tostring(targetY)..")")
+    print("[PTHT] Walking ("..startX..","..startY..") -> ("..targetX..","..targetY..")")
 
     if startX == targetX and startY == targetY then return true end
 
