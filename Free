@@ -1018,7 +1018,14 @@ local function isSolid(x, y)
 end
 
 local function findPath(sx, sy, gx, gy)
+    print("[DEBUG] findPath called: ("..sx..","..sy..") -> ("..gx..","..gy..")")
+    print("[DEBUG] Start solid: "..tostring(isSolid(sx,sy)).." Goal solid: "..tostring(isSolid(gx,gy)))
+    print("[DEBUG] Cache size: "..tostring(#tileCache))
+    
     if sx == gx and sy == gy then return {} end
+    if isSolid(sx, sy) then print("[DEBUG] START is solid!"); return nil end
+    if isSolid(gx, gy) then print("[DEBUG] GOAL is solid!"); return nil end
+    
     local visited = {}
     local parent  = {}
     local queue   = {}
@@ -1027,9 +1034,11 @@ local function findPath(sx, sy, gx, gy)
     visited[key(sx, sy)] = true
     queue[1] = {x=sx, y=sy}
     local DIRS = {{1,0},{-1,0},{0,1},{0,-1}}
+    local explored = 0
     while head <= #queue do
         local cur = queue[head]
         head = head + 1
+        explored = explored + 1
         if cur.x == gx and cur.y == gy then
             local path = {}
             local node = {x=gx, y=gy}
@@ -1037,6 +1046,7 @@ local function findPath(sx, sy, gx, gy)
                 table.insert(path, 1, {x=node.x, y=node.y})
                 node = parent[key(node.x, node.y)]
             end
+            print("[DEBUG] Path found! Length: "..#path.." Explored: "..explored)
             return path
         end
         for _, d in ipairs(DIRS) do
@@ -1048,7 +1058,9 @@ local function findPath(sx, sy, gx, gy)
                 table.insert(queue, {x=nx, y=ny})
             end
         end
+        if explored > 10000 then print("[DEBUG] Explored too many nodes, stopping"); break end
     end
+    print("[DEBUG] NO PATH FOUND! Explored: "..explored.." Queue size: "..#queue)
     return nil
 end
 
@@ -1124,7 +1136,8 @@ end
 -- COLLISION BAKING
 -- ─────────────────────────────────────────────────────────────
 local function prebakeCollision()
-    if not WorldManager then return false end
+    if not WorldManager then print("[DEBUG] WorldManager is NIL"); return false end
+    print("[DEBUG] Starting collision bake...")
     for k in pairs(tileCache) do tileCache[k] = nil end
     tileCacheVersion = tileCacheVersion + 1
     local count, blocked = 0, 0
@@ -1138,7 +1151,8 @@ local function prebakeCollision()
         end
         if x % 10 == 0 then task.wait() end
     end
-    print(string.format("[PTHT] Bake: %d tiles, %d solid, %d passable", count, blocked, count-blocked))
+    print(string.format("[DEBUG] Bake DONE: %d tiles, %d solid, %d passable", count, blocked, count-blocked))
+    print("[DEBUG] Sample tiles: (0,0)="..tostring(tileCache[0])..", (10,10)="..tostring(tileCache[100010])..", (20,20)="..tostring(tileCache[200020]))
     return count > 0
 end
 
