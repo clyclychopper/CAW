@@ -1080,15 +1080,21 @@ end
 
 -- FIX 1: Renamed from isTileBlocked → isSolid (used everywhere consistently)
 -- A tile is solid if it's in tileCache as true OR out of bounds.
+-- TILE HELPERS (simplified - no standability filter)
 local function isSolid(x, y)
     if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then
-        return true  -- world boundary = solid wall
+        return true
     end
     return tileCache[x * 10000 + y] == true
 end
 
 local function isAir(x, y)
     return not isSolid(x, y)
+end
+
+-- REMOVED canStandAt entirely. Any air tile is a valid position.
+local function canMoveTo(x, y)
+    return isAir(x, y)
 end
 
 -- FIX 2: canStandAt no longer requires y-1 to be in the cache as solid.
@@ -1281,78 +1287,39 @@ local function pqIsEmpty() return _pqSize == 0 end
 -- `continue` only exists in Luau via `goto continue` + label.
 -- This was silently skipping ALL fall neighbours.
 -- ─────────────────────────────────────────────────────────────
+-- NEIGHBOUR GENERATION (no standability checks)
 local function getNeighbours(x, y)
     local result = {}
 
-    -- ── WALK LEFT / RIGHT ──────────────────────────────────────
+    -- Walk left/right
     for _, dx in ipairs({-1, 1}) do
         local nx = x + dx
-        if canStandAt(nx, y) then
+        if canMoveTo(nx, y) then
             table.insert(result, {x = nx, y = y, cost = 1})
         end
     end
 
-    -- ── JUMP: up to 3 tiles high ───────────────────────────────
-    for h = 1, 3 do
-        local clearUp = true
-        for dy = 1, h do
-            if not isAir(x, y + dy) or not isAir(x, y + dy + 1) then
-                clearUp = false
-                break
-            end
-        end
-        if not clearUp then break end
-
-        for dx = -h, h do
-            local lx = x + dx
-            local ly = y + h
-            local pathClear = true
-
-            if dx ~= 0 then
-                local stepX = dx > 0 and 1 or -1
-                local cx = x + stepX
-                while cx ~= lx do
-                    if not isAir(cx, ly) or not isAir(cx, ly + 1) then
-                        pathClear = false
-                        break
-                    end
-                    cx = cx + stepX
-                end
-            end
-
-            if pathClear and canStandAt(lx, ly) then
-                local jumpCost = h + math.abs(dx) * 0.5
-                table.insert(result, {x = lx, y = ly, cost = jumpCost})
+    -- Jump up (just needs air)
+    for h = 1, MAX_JUMP do
+        local ny = y + h
+        if not canMoveTo(x, ny) then break end
+        table.insert(result, {x = x, y = ny, cost = h})
+        for _, dx in ipairs({-1, 1}) do
+            local nx = x + dx
+            if canMoveTo(nx, ny) then
+                table.insert(result, {x = nx, y = ny, cost = h + 0.5})
             end
         end
     end
 
-    -- ── FALL: drop down, optionally stepping sideways ──────────
-    -- FIX 4 continued: replaced `continue` with proper if-block
+    -- Fall down
     for _, dx in ipairs({-1, 0, 1}) do
-        local canStep = true
-
-        -- For diagonal falls, the sideways tile must be air (walk off ledge)
-        if dx ~= 0 and not isAir(x + dx, y) then
-            canStep = false
-        end
-
-        if canStep then
+        for drop = 1, MAX_FALL do
             local fx = x + dx
-            for drop = 1, 20 do
-                local fy = y - drop
-                if fy < 0 then break end
-
-                if isSolid(fx, fy) then
-                    -- Hit a wall while falling diagonally — stop
-                    break
-                elseif isSolid(fx, fy - 1) and isAir(fx, fy) and isAir(fx, fy + 1) then
-                    -- Found a valid landing spot
-                    local fallCost = drop * 0.3 + math.abs(dx)
-                    table.insert(result, {x = fx, y = fy, cost = fallCost})
-                    break
-                end
-            end
+            local fy = y - drop
+            if fy < 0 then break end
+            if not canMoveTo(fx, fy) then break end
+            table.insert(result, {x = fx, y = fy, cost = drop * 0.3 + math.abs(dx)})
         end
     end
 
@@ -1364,53 +1331,13 @@ end
 -- FIX 5: Removed goal solid-block check that rejected valid air-tile goals.
 -- The goal is where the player needs to STAND, which is an air tile above solid.
 -- ─────────────────────────────────────────────────────────────
+-- A* (no goal/start validation at all)
 local function astar(startX, startY, goalX, goalY)
     if startX == goalX and startY == goalY then return {} end
 
-    -- Validate start: must be able to stand there (or be at y=0 floor)
-    if not canStandAt(startX, startY) and startY ~= 0 then
-        warn(string.format("[PTHT] A*: start (%d,%d) is not a valid standing position", startX, startY))
-        -- Try one tile up as recovery
-        if canStandAt(startX, startY + 1) then
-            startY = startY + 1
-            warn("[PTHT] A*: adjusted start up by 1")
-        end
-    end
-
-    -- Validate goal: must be standable
-    if not canStandAt(goalX, goalY) then
-        warn(string.format("[PTHT] A*: goal (%d,%d) is not standable, searching nearby", goalX, goalY))
-        -- Search in expanding radius for nearest valid standing tile
-        local found = false
-        for radius = 1, 4 do
-            for dy = -radius, radius do
-                for dx = -radius, radius do
-                    if math.abs(dx) == radius or math.abs(dy) == radius then
-                        local nx, ny = goalX + dx, goalY + dy
-                        if canStandAt(nx, ny) then
-                            goalX, goalY = nx, ny
-                            found = true
-                            warn(string.format("[PTHT] A*: adjusted goal to (%d,%d)", goalX, goalY))
-                            break
-                        end
-                    end
-                end
-                if found then break end
-            end
-            if found then break end
-        end
-        if not found then
-            warn("[PTHT] A*: no valid goal found within radius 4")
-            return nil
-        end
-    end
-
     local function tileKey(x, y) return x * 10000 + y end
-
-    -- Heuristic: Manhattan with vertical penalty (going up costs more)
     local function heuristic(x, y)
-        local dy = goalY - y
-        return math.abs(x - goalX) + math.abs(dy) + (dy > 0 and dy * 0.5 or 0)
+        return math.abs(x - goalX) + math.abs(y - goalY)
     end
 
     local closed   = {}
@@ -1418,28 +1345,24 @@ local function astar(startX, startY, goalX, goalY)
     local gScore   = {}
 
     pqReset()
-
     local sk = tileKey(startX, startY)
     gScore[sk] = 0
     pqPush({x = startX, y = startY, g = 0, f = heuristic(startX, startY)})
 
     local expanded = 0
-
     while not pqIsEmpty() do
         expanded = expanded + 1
         if expanded > ASTAR_MAX_NODES then
-            warn("[YSHub] A*: node expansion limit hit ("..ASTAR_MAX_NODES..")")
+            warn("[PTHT] A*: node limit hit")
             return nil
         end
 
         local cur = pqPop()
         local ck  = tileKey(cur.x, cur.y)
-
         if closed[ck] then continue end
         closed[ck] = true
 
         if cur.x == goalX and cur.y == goalY then
-            -- Reconstruct path from cameFrom chain
             local path = {}
             local node = ck
             while cameFrom[node] do
@@ -1463,7 +1386,7 @@ local function astar(startX, startY, goalX, goalY)
         end
     end
 
-    return nil  -- no path exists
+    return nil
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -4466,4 +4389,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YSss")
+print("YS")
