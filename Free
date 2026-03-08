@@ -1866,7 +1866,7 @@ local function prebakeCollision()
     -- ─────────────────────────────────────────────────────────────
     -- DO BREAK CYCLE
     -- ─────────────────────────────────────────────────────────────
-    local function doBreakCycle(ctx)
+        local function doBreakCycle(ctx)
         print("[BREAK] Starting break cycle")
         local nowEntry = safeGetServerTime()
         if (nowEntry - _lastBreakCycleTime) < BREAK_CYCLE_COOLDOWN then 
@@ -1875,8 +1875,7 @@ local function prebakeCollision()
         end
         if not WorldManager or not movement then print("[BREAK] Missing modules"); return end
         
-            -- Walk to middle position BELOW the break area (not ON the blocks)
-            local midX = math.floor((ctx.minX + ctx.maxX) / 2)
+        local midX = math.floor((ctx.minX + ctx.maxX) / 2)
         local midY = ctx.endY
         print("[BREAK] Walking to middle ("..midX..","..midY..")")
         
@@ -1887,7 +1886,7 @@ local function prebakeCollision()
         
         print("[BREAK] At middle position, placing blocks")
         setWatchdogExtended(true)
-            local blocksPlaced = 0
+        local blocksPlaced = 0
         for xOff = -2, 2 do
             if not PTHT_Running or not _G.AutoPTHT then return end
             for _, py in ipairs({ ctx.endY + 1, ctx.endY + 2 }) do
@@ -1902,6 +1901,7 @@ local function prebakeCollision()
             end
         end
         print("[BREAK] Placed "..blocksPlaced.." blocks")
+        
         local tilesToBreak = {}
         for xOff = -2, 2 do
             local px1, py1 = midX + xOff, ctx.endY + 1
@@ -1916,84 +1916,113 @@ local function prebakeCollision()
         for _, tile in ipairs(tilesToBreak) do
             tileCache[tile.x * 10000 + tile.y] = false
         end
-            if #tilesToBreak == 0 then
+        
+        if #tilesToBreak == 0 then
             print("[BREAK] No tiles to break")
             _lastBreakCycleTime = safeGetServerTime()
             setWatchdogExtended(false)
             return
         end
-            print("[BREAK] Breaking "..#tilesToBreak.." tiles")
-    
-    -- CRITICAL: Stay in middle position during entire break cycle
-    movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
-    movement.Grounded = true
-    movement.VelocityX = 0
-    movement.VelocityY = 0
-    task.wait(0.2)
-    
-    local broken      = {}
-    local attempts    = {}
-    local MAX_ATTEMPTS = 8
-    for _, t in ipairs(tilesToBreak) do attempts[t.x * 10000 + t.y] = 0 end
-    local allDone    = false
-    local cycleStart = safeGetServerTime()
-    local iter       = 0
-    
-    while PTHT_Running and _G.AutoPTHT and not allDone do
-        iter = iter + 1
-        if iter % 5 == 0 and (safeGetServerTime() - cycleStart) > 30 then
-            warn("[YSHub] Break cycle timeout"); break
-        end
-        kickWatchdog()
-        allDone = true
         
-        for _, tile in ipairs(tilesToBreak) do
-            if not PTHT_Running or not _G.AutoPTHT then break end
-            local k = tile.x * 10000 + tile.y
+        print("[BREAK] Breaking "..#tilesToBreak.." tiles")
+        movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
+        movement.Grounded = true
+        movement.VelocityX = 0
+        movement.VelocityY = 0
+        task.wait(0.2)
+        
+        local broken = {}
+        local attempts = {}
+        local MAX_ATTEMPTS = 8
+        for _, t in ipairs(tilesToBreak) do attempts[t.x * 10000 + t.y] = 0 end
+        local allDone = false
+        local cycleStart = safeGetServerTime()
+        local iter = 0
+        
+        while PTHT_Running and _G.AutoPTHT and not allDone do
+            iter = iter + 1
+            if iter % 5 == 0 and (safeGetServerTime() - cycleStart) > 30 then
+                warn("[YSHub] Break cycle timeout"); break
+            end
+            kickWatchdog()
+            allDone = true
             
-            if broken[k] then
-                -- already done, skip
-            else
-                local stillThere = WorldManager.GetTile(tile.x, tile.y, 1)
-                                or WorldManager.GetTile(tile.x, tile.y, 2)
-                if not stillThere then
-                    broken[k] = true; tileCache[k] = false
-                elseif attempts[k] >= MAX_ATTEMPTS then
-                    broken[k] = true
-                    warn("[YSHub] Tile ("..tile.x..","..tile.y..") max attempts")
+            for _, tile in ipairs(tilesToBreak) do
+                if not PTHT_Running or not _G.AutoPTHT then break end
+                local k = tile.x * 10000 + tile.y
+                
+                if broken[k] then
+                    -- already done
                 else
-                    allDone = false
-                    attempts[k] = attempts[k] + 1
-                    
-                    -- CRITICAL: Lock position before each break
-                    movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
-                    movement.Grounded = true
-                    movement.VelocityX = 0
-                    movement.VelocityY = 0
-                    
-                    -- Break from stationary position
-                    local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
-                    if remote then
-                        pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
+                    local stillThere = WorldManager.GetTile(tile.x, tile.y, 1)
+                                    or WorldManager.GetTile(tile.x, tile.y, 2)
+                    if not stillThere then
+                        broken[k] = true; tileCache[k] = false
+                    elseif attempts[k] >= MAX_ATTEMPTS then
+                        broken[k] = true
+                        warn("[YSHub] Tile ("..tile.x..","..tile.y..") max attempts")
+                    else
+                        allDone = false
+                        attempts[k] = attempts[k] + 1
+                        
+                        movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
+                        movement.Grounded = true
+                        movement.VelocityX = 0
+                        movement.VelocityY = 0
+                        
+                        local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
+                        if remote then
+                            pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
+                        end
+                        
+                        local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+                        task.wait(isMob and 0.3 or math.max(0.05, ctx.breakSpeed))
                     end
-                    
-                    local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-                    task.wait(isMob and 0.3 or math.max(0.05, ctx.breakSpeed))
                 end
             end
         end
-    end
-            _lastBreakCycleTime = safeGetServerTime()
+        
+        _lastBreakCycleTime = safeGetServerTime()
         invalidateTileCache()
         invalidateFarmCache()
         local bCount = 0
         for _ in pairs(broken) do bCount = bCount + 1 end
         print("[BREAK] Broke "..bCount.." tiles")
-        task.wait(0.3 + bCount * 0.05)
-        local cx = midX * TILE_SIZE
-        local cy = (ctx.endY + 1.5) * TILE_SIZE
-        collectDropsAndGems(false, Vector3.new(cx, cy, 0), TILE_SIZE * 8)
+        
+        -- Wait for drops to spawn
+        task.wait(1.5)
+        
+        -- Collect drops by directly interpolating to each one
+        print("[BREAK] Collecting drops...")
+        local collected = 0
+        local breakAreaMinX = midX - 2
+        local breakAreaMaxX = midX + 2
+        local breakAreaMinY = ctx.endY + 1
+        local breakAreaMaxY = ctx.endY + 2
+        
+        for _, drop in ipairs(workspace.Drops:GetChildren()) do
+            if not PTHT_Running or not _G.AutoPTHT then break end
+            if drop and drop.Parent then
+                local dropTileX = math.round(drop.Position.X / TILE_SIZE)
+                local dropTileY = math.round(drop.Position.Y / TILE_SIZE)
+                
+                -- Only collect drops from the break area
+                if dropTileX >= breakAreaMinX and dropTileX <= breakAreaMaxX
+                and dropTileY >= breakAreaMinY and dropTileY <= breakAreaMaxY then
+                    -- Directly interpolate to drop position
+                                        movement.Position = Vector3.new(drop.Position.X, drop.Position.Y, 0)
+                    movement.Grounded = true
+                    movement.VelocityX = 0
+                    movement.VelocityY = 0
+                    task.wait(0.02)
+                    collected = collected + 1
+                end
+            end
+        end
+        
+        print("[BREAK] Collected "..collected.." drops")
         setWatchdogExtended(false)
+        markInventoryDirty()
         task.wait(0.15)
     end
 
