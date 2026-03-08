@@ -1050,10 +1050,10 @@
 end
 
     local function findPath(sx, sy, gx, gy)
-        print("[DEBUG] findPath called: ("..sx..","..sy..") -> ("..gx..","..gy..")")
+
         if sx == gx and sy == gy then return {} end
         if isSolid(sx, sy) then
-            warn("[findPath] Start ("..sx..","..sy..") is solid — cannot pathfind")
+    
             return nil
         end
         -- For the GOAL: saplings are valid destinations (they're in the tileCache as passable)
@@ -1070,7 +1070,7 @@ end
                 end
             end
             if not found then
-                warn("[findPath] Goal ("..gx..","..gy..") is solid and no fallback found")
+
                 return nil
             end
         end
@@ -1097,7 +1097,7 @@ end
                     table.insert(path, 1, {x=node.x, y=node.y})
                     node = parent[key(node.x, node.y)]
                 end
-                print("[DEBUG] Path found! Length: "..#path.." Explored: "..explored)
+
                 return path
             end
 
@@ -1112,12 +1112,12 @@ end
             end
 
             if explored > Hub.ASTAR_MAX_NODES then
-                warn("[findPath] Node limit reached ("..explored.."), no path found")
+
                 return nil
             end
         end
 
-        warn("[DEBUG] NO PATH FOUND! Explored: "..explored)
+
         return nil
     end
 
@@ -1135,7 +1135,7 @@ local function walkToTile(gx, gy)
     -- Use proper BFS pathfinding
     local path = findPath(sx, sy, gx, gy)
     if not path or #path == 0 then
-        warn("[Walk] No path from ("..sx..","..sy..") to ("..gx..","..gy..")")
+
         return false
     end
     
@@ -1215,7 +1215,7 @@ end
                 task.wait(5)
                 local timeout = _watchdogExtended and 50 or 15
                 if PTHT_Running and (os.clock() - _watchdogLastKick) > timeout then
-                    warn("[Watchdog] Bot stuck — stopping")
+        
                     StopPTHT()  -- safe: StopPTHT is forward-declared
                 end
             end
@@ -1225,18 +1225,52 @@ end
     -- ─────────────────────────────────────────────────────────────
     -- COLLISION BAKING
     -- ─────────────────────────────────────────────────────────────
-    invalidateTileCache = function()
+        invalidateTileCache = function()
         for k in pairs(tileCache) do tileCache[k] = nil end
         tileCacheVersion = tileCacheVersion + 1
+    end
+    
+    local function cleanupCaches()
+        -- Clear tile cache outside farm area to prevent memory bloat
+        local minX = (_G.MinX or 0) - 15
+        local maxX = (_G.MaxX or 50) + 15
+        local minY = (_G.StartY or 0) - 15
+        local maxY = (_G.EndY or 20) + 15
+        
+        local cleaned = 0
+        for k in pairs(tileCache) do
+            local x = math.floor(k / 10000)
+            local y = k % 10000
+            if x < minX or x > maxX or y < minY or y > maxY then
+                tileCache[k] = nil
+                cleaned = cleaned + 1
+            end
+        end
+        
+        -- Limit itemDataCache size (keep only recent 200 items)
+        local cacheSize = 0
+        for _ in pairs(itemDataCache) do cacheSize = cacheSize + 1 end
+        if cacheSize > 200 then
+            local toRemove = {}
+            local count = 0
+            for id in pairs(itemDataCache) do
+                count = count + 1
+                if count > 150 then table.insert(toRemove, id) end
+            end
+            for _, id in ipairs(toRemove) do itemDataCache[id] = nil end
+        end
+        
+        -- Force garbage collection
+        if collectgarbage then collectgarbage("collect") end
     end
 
     -- OPTIMIZED: Bake farm area + drop zones
 local function prebakeCollision()
     if not WorldManager then
-        warn("[DEBUG] WorldManager is NIL during bake")
+
         return false
     end
-    print("[DEBUG] Starting optimized collision bake...")
+
     invalidateTileCache()
 
     -- Calculate baking area including farm + drop positions
@@ -1286,15 +1320,12 @@ local function prebakeCollision()
             if x % 10 == 0 then task.wait() end
         end
 
-        print(string.format("[DEBUG] Bake DONE: %d tiles, %d solid, %d passable",
-            count, blocked, count - blocked))
-        print("[DEBUG] Sample: (0,0)=" .. tostring(tileCache[0])
-            .. " (10,10)=" .. tostring(tileCache[100010])
-            .. " (20,20)=" .. tostring(tileCache[200020]))
-        print("[DEBUG] Cache has data: " .. tostring(next(tileCache) ~= nil))
+        
+        
+
         -- FIXED: correct key is 82*10000+39 = 820039, not 820390
-        print("[DEBUG] Tile (82,39): " .. tostring(tileCache[82 * 10000 + 39]))
-        print("[DEBUG] Tile (82,32): " .. tostring(tileCache[82 * 10000 + 32]))
+
+
         return count > 0
     end
 
@@ -1434,10 +1465,10 @@ local function prebakeCollision()
             if _G.BlockDropX and _G.BlockDropY
             and (now - _lastBlockDropTime) < DROP_ZONE_AVOID_DURATION then
                 local distX = math.abs(pos.X - _G.BlockDropX * TILE_SIZE)
-                print("[DEBUG] Drop check: distX="..distX.." threshold="..(TILE_SIZE*3).." timeSince="..(now-_lastBlockDropTime))
+
                 -- Only check X distance (items drop left/right, not up/down)
                 if distX < TILE_SIZE * 3 and math.abs(pos.Y - _G.BlockDropY * TILE_SIZE) < TILE_SIZE then
-                    print("[DEBUG] AVOIDING drop at ("..math.round(pos.X/TILE_SIZE)..","..math.round(pos.Y/TILE_SIZE)..")")
+
                     return true
                 end
             end
@@ -1741,18 +1772,18 @@ local function prebakeCollision()
         local endY   = tonumber(ctx.endY)   or 0
 
         if minX >= maxX then
-            warn("[PLANT] Invalid area: minX("..minX..") >= maxX("..maxX..")")
+
             return
         end
         if startY > endY then
-            warn("[PLANT] Invalid area: startY("..startY..") > endY("..endY..")")
+
             return
         end
 
-        print("[PLANT] Starting plant cycle in area ("..minX..","..startY..")->("..maxX..","..endY..")")
+
 
         if not WorldManager or not Inventory then
-            warn("[PLANT] Missing modules")
+
             return
         end
 
@@ -1765,7 +1796,7 @@ local function prebakeCollision()
             end
         end
 
-        print("[PLANT] Found " .. #emptyList .. " empty spots")
+
 
         if #emptyList == 0 then return end
 
@@ -1792,19 +1823,17 @@ local function prebakeCollision()
 
         for i, spot in ipairs(emptyList) do
             if not PTHT_Running or not _G.AutoPTHT then
-                print("[PLANT] Stopped by user")
+
                 return
             end
 
             local seeds = countInInventory(ctx.saplingID)
             if seeds == 0 then
-                print("[PLANT] Out of saplings at step " .. i)
+
                 break
             end
 
-            print("[PLANT] " .. i .. "/" .. #emptyList
-                .. " - Walking to (" .. spot.x .. "," .. spot.y .. ")"
-                .. " - Seeds: " .. seeds)
+            
 
             kickWatchdog()
 
@@ -1822,19 +1851,19 @@ local function prebakeCollision()
                     task.wait(ctx.plantSpeed)
                     -- Retry once if placement failed
                     if not WorldManager.GetTile(spot.x, spot.y, 1) then
-                        print("[PLANT] Retry planting at (" .. spot.x .. "," .. spot.y .. ")")
+
                         plantSapling(spot.x, spot.y, ctx.saplingID)
                         task.wait(0.15)
                     end
                 else
-                    warn("[PLANT] Walk failed to (" .. spot.x .. "," .. spot.y .. "), skipping")
+
                 end
             else
-                print("[PLANT] Spot (" .. spot.x .. "," .. spot.y .. ") already filled, skipping")
+
             end
         end
 
-        print("[PLANT] Cycle complete")
+
         invalidateFarmCache()
     end
 
@@ -1867,24 +1896,24 @@ local function prebakeCollision()
     -- DO BREAK CYCLE
     -- ─────────────────────────────────────────────────────────────
         local function doBreakCycle(ctx)
-        print("[BREAK] Starting break cycle")
+
         local nowEntry = safeGetServerTime()
         if (nowEntry - _lastBreakCycleTime) < BREAK_CYCLE_COOLDOWN then 
-            print("[BREAK] On cooldown, skipping")
+
             return 
         end
-        if not WorldManager or not movement then print("[BREAK] Missing modules"); return end
+        if not WorldManager or not movement then return end
         
         local midX = math.floor((ctx.minX + ctx.maxX) / 2)
         local midY = ctx.endY
-        print("[BREAK] Walking to middle ("..midX..","..midY..")")
+
         
         if not walkToTile(midX, midY) then
-            print("[BREAK] Failed to walk to middle position")
+
             _lastBreakCycleTime = safeGetServerTime(); return
         end
         
-        print("[BREAK] At middle position, placing blocks")
+
         setWatchdogExtended(true)
         local blocksPlaced = 0
         for xOff = -2, 2 do
@@ -1893,14 +1922,14 @@ local function prebakeCollision()
                 local px = midX + xOff
                 if not (WorldManager.GetTile(px, py, 1) or WorldManager.GetTile(px, py, 2))
                 and countInInventory(ctx.blockID) > 0 then
-                    print("[BREAK] Placing block at ("..px..","..py..")")
+
                     placeBlock(px, py, ctx.blockID)
                     blocksPlaced = blocksPlaced + 1
                     task.wait(0.05)
                 end
             end
         end
-        print("[BREAK] Placed "..blocksPlaced.." blocks")
+
         
         local tilesToBreak = {}
         for xOff = -2, 2 do
@@ -1918,13 +1947,13 @@ local function prebakeCollision()
         end
         
         if #tilesToBreak == 0 then
-            print("[BREAK] No tiles to break")
+
             _lastBreakCycleTime = safeGetServerTime()
             setWatchdogExtended(false)
             return
         end
         
-        print("[BREAK] Breaking "..#tilesToBreak.." tiles")
+
         movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
         movement.Grounded = true
         movement.VelocityX = 0
@@ -1981,7 +2010,7 @@ local function prebakeCollision()
             
             -- Check if all blocks are broken
             if allBroken then
-                print("[BREAK] All blocks broken after "..cycle.." cycles")
+
                 break
             end
             
@@ -1998,18 +2027,18 @@ local function prebakeCollision()
         print("[BREAK] Broke "..bCount.." tiles")
         
                         -- CRITICAL: Verify all blocks are actually broken before collecting
-        print("[BREAK] Verifying all blocks are broken...")
+
         local stillUnbroken = {}
         for _, tile in ipairs(tilesToBreak) do
             if WorldManager.GetTile(tile.x, tile.y, 1) or WorldManager.GetTile(tile.x, tile.y, 2) then
                 table.insert(stillUnbroken, tile)
-                print("[BREAK] WARNING: Block still exists at ("..tile.x..","..tile.y..")")
+
             end
         end
         
         -- If any blocks remain, do one more breaking pass
         if #stillUnbroken > 0 then
-            print("[BREAK] "..#stillUnbroken.." blocks still remain, doing extra break pass...")
+
             for _, tile in ipairs(stillUnbroken) do
                 if not PTHT_Running or not _G.AutoPTHT then break end
                 movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
@@ -2029,19 +2058,21 @@ local function prebakeCollision()
             end
         end
         
-                -- Wait for drops to spawn (FASTER)
+                        -- Wait for drops to spawn (FASTER)
         task.wait(1.0)
         
-        -- Collect drops using smooth pathfinding
-        print("[BREAK] Collecting drops...")
+        -- Collect drops AND gems using smooth pathfinding
+
         local collected = 0
         local breakAreaMinX = midX - 2
         local breakAreaMaxX = midX + 2
         local breakAreaMinY = ctx.endY + 1
         local breakAreaMaxY = ctx.endY + 2
         
-        -- Gather all drop positions in break area
+                -- Gather all drop AND gem positions in break area
         local dropPositions = {}
+        
+        -- Collect drops
         for _, drop in ipairs(workspace.Drops:GetChildren()) do
             if drop and drop.Parent then
                 local dropTileX = math.round(drop.Position.X / TILE_SIZE)
@@ -2049,31 +2080,51 @@ local function prebakeCollision()
                 
                 if dropTileX >= breakAreaMinX and dropTileX <= breakAreaMaxX
                 and dropTileY >= breakAreaMinY and dropTileY <= breakAreaMaxY then
-                    table.insert(dropPositions, {x = dropTileX, y = dropTileY})
+                    table.insert(dropPositions, {x = dropTileX, y = dropTileY, type = "drop"})
                 end
             end
         end
         
-        -- Sort drops by distance for efficient collection
-        local curX = math.round(movement.Position.X / TILE_SIZE)
-        local curY = math.round(movement.Position.Y / TILE_SIZE)
+        -- Collect gems
+        local gemsFolder = workspace:FindFirstChild("Gems")
+        if gemsFolder then
+            for _, gem in ipairs(gemsFolder:GetChildren()) do
+                if gem:IsA("BasePart") and gem:FindFirstChild("gems") then
+                    local gemTileX = math.round(gem.Position.X / TILE_SIZE)
+                    local gemTileY = math.round(gem.Position.Y / TILE_SIZE)
+                    
+                    if gemTileX >= breakAreaMinX and gemTileX <= breakAreaMaxX
+                    and gemTileY >= breakAreaMinY and gemTileY <= breakAreaMaxY then
+                        table.insert(dropPositions, {x = gemTileX, y = gemTileY, type = "gem"})
+                    end
+                end
+            end
+        end
+        
+                -- Sort drops in zigzag row pattern for continuous collection
+        local farmWidth = (ctx.maxX - ctx.minX)
+        for _, pos in ipairs(dropPositions) do
+            local row = pos.y - ctx.endY
+            local col = pos.x - (ctx.minX - 2)
+            -- Zigzag: even rows left-to-right, odd rows right-to-left
+            local sortX = (row % 2 == 0) and col or (farmWidth + 4 - col)
+            pos.sortKey = row * 10000 + sortX
+        end
         table.sort(dropPositions, function(a, b)
-            local distA = math.abs(a.x - curX) + math.abs(a.y - curY)
-            local distB = math.abs(b.x - curX) + math.abs(b.y - curY)
-            return distA < distB
+            return a.sortKey < b.sortKey
         end)
         
         -- Walk to each drop position with smooth interpolation
         for i, pos in ipairs(dropPositions) do
             if not PTHT_Running or not _G.AutoPTHT then break end
-                        print("[BREAK] Collecting drop "..i.."/"..#dropPositions.." at ("..pos.x..","..pos.y..")")
+            
             if walkToTile(pos.x, pos.y) then
                 task.wait(0.15)
                 collected = collected + 1
             end
         end
         
-        print("[BREAK] Collected "..collected.." drops")
+
         setWatchdogExtended(false)
         markInventoryDirty()
         task.wait(0.15)
@@ -2115,11 +2166,11 @@ local function prebakeCollision()
         ItemsManager = im
         Inventory    = inv
 
-        print("\n🚀 [PTHT] Starting...")
-        print("   WorldManager:", WorldManager and "✓" or "✗")
-        print("   ItemsManager:", ItemsManager and "✓" or "✗")
-        print("   Inventory:",    Inventory    and "✓" or "✗")
-        print("   movement:",     movement     and "✓" or "✗")
+
+
+
+
+
 
         if not WorldManager or not ItemsManager or not Inventory or not movement then
             showNotification("⚠️ Modules not loaded yet. Wait and retry.", 5)
@@ -2132,16 +2183,16 @@ local function prebakeCollision()
         invalidateFarmCache()
 
         task.spawn(function()
-            print("🔧 [PTHT] Baking collision...")
+
             local bakeOk = false
             for attempt = 1, 3 do
                 bakeOk = prebakeCollision()
-                if bakeOk then print("✅ [PTHT] Collision baked"); break end
-                warn("[PTHT] Bake attempt " .. attempt .. " failed, retry in 1s")
+                if bakeOk then break end
+
                 task.wait(1)
             end
             if not bakeOk then
-                warn("[PTHT] ❌ Bake failed — pathfinding may be incorrect")
+
             end
 
             kickWatchdog()
@@ -2151,12 +2202,12 @@ local function prebakeCollision()
 
             while PTHT_Running and _G.AutoPTHT do
                 kickWatchdog()
-                print("\n[PTHT] ═══════════════════════════════════════")
+
 
                 local saplingID = _G.SelectedSaplingID
                 local blockID   = _G.SelectedBlockID
                 if not saplingID or saplingID == "" or not blockID or blockID == "" then
-                    warn("[PTHT] No sapling/block selected — stopping")
+
                     StopPTHT()
                     return
                 end
@@ -2169,7 +2220,7 @@ local function prebakeCollision()
 
                 -- Validate area before proceeding
                 if minX >= maxX or startY > endY then
-                    warn("[PTHT] Invalid farm area — check Min/Max X and Start/End Y")
+
                     task.wait(2)
                     continue
                 end
@@ -2190,7 +2241,7 @@ local function prebakeCollision()
                 local farmRows      = math.floor((endY - startY) / 2) + 1
                 local totalCapacity = farmWidth * farmRows
 
-                print("[PTHT] Seeds: "..seeds.." | Blocks: "..blocks.." | Capacity: "..totalCapacity)
+
 
                 local now = safeGetServerTime()
                 if not isFarmCacheValid() or (now - _lastScanTime) >= SCAN_MIN_INTERVAL then
@@ -2235,12 +2286,12 @@ local function prebakeCollision()
                 local emptySpots      = _farmCache.emptySpots
                 local readySaplings   = _farmCache.readySaplings
                 local growingSaplings = _farmCache.growingSaplings
-                print("[PTHT] Empty: "..emptySpots.." | Ready: "..#readySaplings.." | Growing: "..growingSaplings)
+
 
                 -- Auto drop blocks if inventory full
                 if _G.AutoDropBlocks and countUsedSlots() >= Inventory.MaxSlots - 2
                 and _G.BlockDropX and _G.BlockDropY then
-                    print("[PTHT] Inventory full, dropping blocks")
+
                     dropItemsAtPosition(blockID, _G.BlockDropX, _G.BlockDropY, math.floor(blocks/2), false)
                     task.wait(1)
                     blocks = countInInventory(blockID)
@@ -2249,7 +2300,7 @@ local function prebakeCollision()
                 -- Auto drop excess saplings
                 if _G.AutoDropSaplings and seeds > totalCapacity + 200
                 and _G.SaplingDropX and _G.SaplingDropY then
-                    print("[PTHT] Too many saplings, dropping excess")
+
                     dropItemsAtPosition(saplingID, _G.SaplingDropX, _G.SaplingDropY, seeds - totalCapacity, false)
                     task.wait(1)
                     seeds = countInInventory(saplingID)
@@ -2257,7 +2308,7 @@ local function prebakeCollision()
 
                 -- Priority 1: Harvest ready saplings
                 if #readySaplings > 0 then
-                    print("[PTHT] ACTION: Harvesting " .. #readySaplings .. " ready saplings")
+
                     table.sort(readySaplings, function(a, b)
                         return a.y == b.y and a.x < b.x or a.y < b.y
                     end)
@@ -2265,10 +2316,10 @@ local function prebakeCollision()
                     for i, sapling in ipairs(readySaplings) do
                         if not PTHT_Running or not _G.AutoPTHT then return end
                         kickWatchdog()
-                        print("[HARVEST] "..i.."/"..#readySaplings.." -> ("..sapling.x..","..sapling.y..")")
+                        
 
                         if not walkToTile(sapling.x, sapling.y) then
-                            warn("[HARVEST] Walk failed to ("..sapling.x..","..sapling.y.."), skipping")
+
                             continue
                         end
 
@@ -2277,7 +2328,7 @@ local function prebakeCollision()
                         and _G.BlockDropX and _G.BlockDropY then
                             blocks = countInInventory(blockID)
                             if blocks > 0 then
-                                print("[HARVEST] Inventory full mid-harvest, dropping blocks")
+
                                 dropItemsAtPosition(blockID, _G.BlockDropX, _G.BlockDropY, math.floor(blocks/2), false)
                                 task.wait(0.5)
                                 walkToTile(sapling.x, sapling.y)
@@ -2290,14 +2341,16 @@ local function prebakeCollision()
                             task.wait(harvestSpeed)
                             task.wait(0.15)
                         else
-                            print("[HARVEST] Tile already gone at ("..sapling.x..","..sapling.y..")")
+
                         end
                     end
 
-                                        print("[PTHT] Collecting drops after harvest")
                     
-                    -- Gather all drop positions in farm area
+                    
+                                        -- Gather all drop AND gem positions in farm area
                     local dropPositions = {}
+                    
+                    -- Collect drops
                     for _, drop in ipairs(workspace.Drops:GetChildren()) do
                         if drop and drop.Parent then
                             local dropTileX = math.round(drop.Position.X / TILE_SIZE)
@@ -2306,19 +2359,39 @@ local function prebakeCollision()
                             -- Only collect drops within farm boundaries
                             if dropTileX >= minX and dropTileX <= maxX
                             and dropTileY >= startY and dropTileY <= endY then
-                                table.insert(dropPositions, {x = dropTileX, y = dropTileY})
+                                table.insert(dropPositions, {x = dropTileX, y = dropTileY, type = "drop"})
                             end
                         end
                     end
                     
-                    -- Sort drops by distance for efficient collection
+                    -- Collect gems
+                    local gemsFolder = workspace:FindFirstChild("Gems")
+                    if gemsFolder then
+                        for _, gem in ipairs(gemsFolder:GetChildren()) do
+                            if gem:IsA("BasePart") and gem:FindFirstChild("gems") then
+                                local gemTileX = math.round(gem.Position.X / TILE_SIZE)
+                                local gemTileY = math.round(gem.Position.Y / TILE_SIZE)
+                                
+                                if gemTileX >= minX and gemTileX <= maxX
+                                and gemTileY >= startY and gemTileY <= endY then
+                                    table.insert(dropPositions, {x = gemTileX, y = gemTileY, type = "gem"})
+                                end
+                            end
+                        end
+                    end
+                    
+                                        -- Sort drops in zigzag row pattern for continuous collection
                     if #dropPositions > 0 then
-                        local curX = math.round(movement.Position.X / TILE_SIZE)
-                        local curY = math.round(movement.Position.Y / TILE_SIZE)
+                        local farmWidth = maxX - minX
+                        for _, pos in ipairs(dropPositions) do
+                            local row = pos.y - startY
+                            local col = pos.x - minX
+                            -- Zigzag: even rows left-to-right, odd rows right-to-left
+                            local sortX = (row % 2 == 0) and col or (farmWidth - col)
+                            pos.sortKey = row * 10000 + sortX
+                        end
                         table.sort(dropPositions, function(a, b)
-                            local distA = math.abs(a.x - curX) + math.abs(a.y - curY)
-                            local distB = math.abs(b.x - curX) + math.abs(b.y - curY)
-                            return distA < distB
+                            return a.sortKey < b.sortKey
                         end)
                         
                         -- Walk to each drop position
@@ -2332,9 +2405,9 @@ local function prebakeCollision()
                                 collected = collected + 1
                             end
                         end
-                        print("[PTHT] Collected " .. collected .. " drops from farm")
+
                     else
-                        print("[PTHT] No drops found in farm area")
+
                     end
                     
                     seeds = countInInventory(saplingID)
@@ -2342,35 +2415,40 @@ local function prebakeCollision()
 
                 -- Priority 2: Plant if we have enough seeds
                 elseif emptySpots > 0 and seeds >= totalCapacity then
-                    print("[PTHT] ACTION: Planting (sufficient seeds)")
+
                     doPlant(ctx)
 
                 -- Priority 3: Break blocks to generate saplings
                 elseif emptySpots > 0 and blocks > 0 then
                     local cooldownLeft = BREAK_CYCLE_COOLDOWN - (safeGetServerTime() - _lastBreakCycleTime)
                     if cooldownLeft <= 0 then
-                        print("[PTHT] ACTION: Breaking blocks for saplings")
+
                         doBreakCycle(ctx)
                         task.wait(0.3)
                         if PTHT_Running and _G.AutoPTHT
                         and countInInventory(saplingID) >= totalCapacity then
-                            print("[PTHT] Got enough saplings, planting now")
+
                             doPlant(ctx)
                         end
                     else
-                        print("[PTHT] Break on cooldown: " .. math.floor(cooldownLeft) .. "s")
+
                         task.wait(math.min(cooldownLeft, 0.2) + 0.05)
                     end
 
                 -- Priority 4: Wait for growing saplings
                 elseif emptySpots == 0 and growingSaplings > 0 then
-                    print("[PTHT] ACTION: All spots growing, waiting...")
+
                     task.wait(3)
                     invalidateFarmCache()
 
+                                -- Periodic cache cleanup for performance
+                elseif emptySpots == 0 and growingSaplings == 0 and #readySaplings == 0 then
+                    cleanupCaches()
+                    task.wait(2)
+                
                 -- Priority 5: Recover from drop zones
                 else
-                    print("[PTHT] ACTION: Recovering from drop zones")
+
                     local recoveredBlocks = 0
                     if _G.BlockDropX and _G.BlockDropY then
                         recoveredBlocks = recoverFrom(_G.BlockDropX, _G.BlockDropY)
@@ -2385,7 +2463,7 @@ local function prebakeCollision()
                         end
                     end
                     if blocks == 0 and seeds == 0 then
-                        print("[PTHT] No resources at all, waiting 5s...")
+
                         task.wait(recoveredBlocks == 0 and 5 or 1)
                     end
                 end
@@ -2394,7 +2472,7 @@ local function prebakeCollision()
             end
 
             PTHT_Running = false
-            print("[PTHT] Main loop exited cleanly")
+
         end)
     end
 
@@ -4255,4 +4333,3 @@ local function prebakeCollision()
         end
         tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
     end)
-    print("YS YS YS YS YS YS")
