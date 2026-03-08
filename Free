@@ -1151,7 +1151,13 @@ local function prebakeCollision()
         if x % 5 == 0 then task.wait() end
     end
 
-    print(string.format("[YSHub] Collision bake complete: %d tiles", tileCount))
+        local blockedCount = 0
+    local passableCount = 0
+    for k, v in pairs(tileCache) do
+        if v then blockedCount = blockedCount + 1
+        else passableCount = passableCount + 1 end
+    end
+    print(string.format("[YSHub] Collision bake: %d tiles, %d blocked, %d passable", tileCount, blockedCount, passableCount))
     return tileCount > 0
 end
 
@@ -4558,4 +4564,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YS")
+print("YS YS YS YS YS YS")
