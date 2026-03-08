@@ -1026,17 +1026,24 @@
     local function isSolid(x, y)
     if x < 0 or y < 0 or x > WORLD_W or y > WORLD_H then return true end
     
-    -- Check cache first
-    if tileCache[x * 10000 + y] == true then return true end
+    -- Check cache first (fast)
+    local cached = tileCache[x * 10000 + y]
+    if cached == true then return true end
     
-    -- Real-time check for blocks (cache might be outdated)
+    -- CRITICAL: Always do real-time check (cache might not cover this area)
     if WorldManager then
         local tile1 = WorldManager.GetTile(x, y, 1)
         local tile2 = WorldManager.GetTile(x, y, 2)
         
-        -- Solid if there's a non-sapling block
-        if tile1 and not isSapling(tile1) then return true end
-        if tile2 and not isSapling(tile2) then return true end
+        -- Solid if there's a non-sapling block on either layer
+        if tile1 and not isSapling(tile1) then
+            tileCache[x * 10000 + y] = true  -- Update cache
+            return true
+        end
+        if tile2 and not isSapling(tile2) then
+            tileCache[x * 10000 + y] = true  -- Update cache
+            return true
+        end
     end
     
     return false
@@ -1223,20 +1230,40 @@ end
         tileCacheVersion = tileCacheVersion + 1
     end
 
-    -- OPTIMIZED: Only bake farm area (not entire world)
-    local function prebakeCollision()
-        if not WorldManager then
-            warn("[DEBUG] WorldManager is NIL during bake")
-            return false
-        end
-        print("[DEBUG] Starting optimized collision bake...")
-        invalidateTileCache()
+    -- OPTIMIZED: Bake farm area + drop zones
+local function prebakeCollision()
+    if not WorldManager then
+        warn("[DEBUG] WorldManager is NIL during bake")
+        return false
+    end
+    print("[DEBUG] Starting optimized collision bake...")
+    invalidateTileCache()
 
-        -- Only bake the farm area + small buffer
-        local minX = math.max(0, (_G.MinX or 0) - 5)
-        local maxX = math.min(WORLD_W, (_G.MaxX or 50) + 5)
-        local minY = math.max(0, (_G.StartY or 0) - 5)
-        local maxY = math.min(WORLD_H, (_G.EndY or 20) + 5)
+    -- Calculate baking area including farm + drop positions
+    local minX = math.max(0, (_G.MinX or 0) - 10)
+    local maxX = math.min(WORLD_W, (_G.MaxX or 50) + 10)
+    local minY = math.max(0, (_G.StartY or 0) - 10)
+    local maxY = math.min(WORLD_H, (_G.EndY or 20) + 10)
+    
+    -- Include drop positions in baking area
+    if _G.BlockDropX and _G.BlockDropY then
+        minX = math.min(minX, _G.BlockDropX - 10)
+        maxX = math.max(maxX, _G.BlockDropX + 10)
+        minY = math.min(minY, _G.BlockDropY - 10)
+        maxY = math.max(maxY, _G.BlockDropY + 10)
+    end
+    if _G.SaplingDropX and _G.SaplingDropY then
+        minX = math.min(minX, _G.SaplingDropX - 10)
+        maxX = math.max(maxX, _G.SaplingDropX + 10)
+        minY = math.min(minY, _G.SaplingDropY - 10)
+        maxY = math.max(maxY, _G.SaplingDropY + 10)
+    end
+    
+    -- Clamp to world bounds
+    minX = math.max(0, minX)
+    maxX = math.min(WORLD_W, maxX)
+    minY = math.max(0, minY)
+    maxY = math.min(WORLD_H, maxY)
         
         local count, blocked = 0, 0
         for x = minX, maxX do
