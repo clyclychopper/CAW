@@ -1023,6 +1023,8 @@ Hub.WORLD_W         = 120
 Hub.WORLD_H         = 70
 Hub.MOVE_DELAY      = 0.1
 Hub.ASTAR_MAX_NODES = 3000
+Hub.MAX_JUMP        = 3
+Hub.MAX_FALL        = 20
 Hub.getGrowTime = getGrowTime
 Hub.isSapling   = isSapling
 
@@ -1035,6 +1037,8 @@ local TILE_SIZE       = Hub.TILE_SIZE       -- World units per tile (4.5)
 local WORLD_W         = Hub.WORLD_W         -- Max X boundary
 local WORLD_H         = Hub.WORLD_H         -- Max Y boundary
 local ASTAR_MAX_NODES = Hub.ASTAR_MAX_NODES -- A* node expansion cap
+local MAX_JUMP        = Hub.MAX_JUMP        -- Max jump height in tiles
+local MAX_FALL        = Hub.MAX_FALL        -- Max fall distance in tiles
 
 -- ── State flags ───────────────────────────────────────────────
 local PTHT_Running = false  -- Main bot loop active?
@@ -1077,6 +1081,13 @@ local function isTileBlocked(x, y)
     return tileCache[x * 10000 + y] == true
 end
 
+-- Returns true if player can stand at this position (tile below is solid)
+local function canStandAt(x, y)
+    if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then return false end
+    if isTileBlocked(x, y) then return false end
+    return isTileBlocked(x, y - 1)
+end
+
 -- Bakes the collision cache for the farm region + padding.
 -- Called once at bot start and after any tile-invalidating event.
 -- FIX: Added module nil-guard and retry on empty bake result.
@@ -1115,12 +1126,13 @@ local function prebakeCollision()
         if ok and data then itemDataCache[tileId] = data end
     end
 
-    -- Pass 3: write collision booleans into tileCache
+        -- Pass 3: write collision booleans into tileCache
+    -- IMPORTANT: Only check layer 1 (foreground) - layer 2 is background/decorative
     local tileCount = 0
     for x = x0, x1 do
         if not PTHT_Running then return false end
         for y = y0, y1 do
-            local tileId = WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)
+            local tileId = WorldManager.GetTile(x, y, 1)  -- Only layer 1 is solid
             if tileId then
                 if isSapling(tileId) then
                     -- Saplings are passable — player walks through them
@@ -1248,32 +1260,154 @@ local function pqIsEmpty() return _pqSize == 0 end
 -- Returns a list of {x, y} tile waypoints from start → goal,
 -- or nil if no path exists within ASTAR_MAX_NODES expansions.
 -- ─────────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
+-- GROWTOPIA-STYLE PATHFINDING
+-- 
+-- World model:
+--   "solid" tile  = blocked, can be stood ON (y+1 above it)
+--   "air" tile    = passable, player occupies this space
+--   player stands at tile (x, y) meaning:
+--     tileCache[x, y]   = AIR  (player body)
+--     tileCache[x, y-1] = SOLID (ground beneath feet)
+--
+-- Valid moves from position (x, y):
+--   WALK LEFT/RIGHT  : (x±1, y) is air AND (x±1, y-1) is solid
+--   JUMP UP 1-3      : straight up or diagonal while ascending,
+--                      must have clearance, must land on solid
+--   FALL             : drop straight down or diagonally while
+--                      no solid below current pos
+-- ─────────────────────────────────────────────────────────────
+
+local function isSolid(x, y)
+    if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then return true end -- world boundary = solid
+    return tileCache[x * 10000 + y] == true
+end
+
+local function isAir(x, y)
+    if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then return false end
+    return not isSolid(x, y)
+end
+
+-- Can the player stand at tile (x, y)?
+-- Needs air at y and y+1 (head clearance), solid at y-1
+local function canStandAt(x, y)
+    return isAir(x, y)
+       and isAir(x, y + 1)   -- head clearance
+       and isSolid(x, y - 1) -- ground beneath feet
+end
+
+-- Build all valid moves from a standing position (x, y)
+-- Returns list of {x, y, cost} reachable positions
+local function getNeighbours(x, y)
+    local result = {}
+
+    -- ── WALK LEFT / RIGHT ──────────────────────────────────────
+    for _, dx in ipairs({-1, 1}) do
+        local nx = x + dx
+        if canStandAt(nx, y) then
+            table.insert(result, {x = nx, y = y, cost = 1})
+        end
+    end
+
+    -- ── JUMP: up to 3 tiles high, land on solid ────────────────
+    -- The player rises vertically then can move horizontally
+    -- We model this as: for each jump height h (1–3),
+    -- check all horizontal offsets reachable at that apex
+    -- (simple model: can move ±h horizontal tiles at apex)
+    for h = 1, 3 do
+        -- Check vertical clearance for the jump column
+        local clearUp = true
+        for dy = 1, h do
+            if not isAir(x, y + dy) or not isAir(x, y + dy + 1) then
+                clearUp = false; break
+            end
+        end
+        if not clearUp then break end -- can't jump higher if blocked
+
+        -- At apex (x, y+h): try landing directly above or offset
+        for dx = -h, h do
+            local lx = x + dx
+            local ly = y + h
+
+            -- Check horizontal path at jump height is clear
+            -- (simplified: just check destination, not every intermediate tile
+            --  for longer jumps this is approximate but works well enough)
+            local pathClear = true
+            if dx ~= 0 then
+                local stepX = dx > 0 and 1 or -1
+                for cx = x + stepX, lx - stepX, stepX do
+                    if not isAir(cx, ly) or not isAir(cx, ly + 1) then
+                        pathClear = false; break
+                    end
+                end
+            end
+
+            if pathClear and canStandAt(lx, ly) then
+                -- Cost = jump height + horizontal distance (penalise longer jumps)
+                local jumpCost = h + math.abs(dx) * 0.5
+                table.insert(result, {x = lx, y = ly, cost = jumpCost})
+            end
+        end
+    end
+
+    -- ── FALL: drop straight down or walk off edge ──────────────
+    for _, dx in ipairs({-1, 0, 1}) do
+        local fx = x + dx
+        -- Can only step sideways if that tile is air (walk off ledge)
+        if dx ~= 0 and not isAir(fx, y) then continue end
+
+        -- Fall until we hit solid ground
+        for drop = 1, 20 do -- max fall distance cap
+            local fy = y - drop
+            if fy < 0 then break end
+            if isSolid(fx, fy - 1) and isAir(fx, fy) and isAir(fx, fy + 1) then
+                -- Landed. Cost = fall distance (falling is free but prioritise shorter falls)
+                table.insert(result, {x = fx, y = fy, cost = drop * 0.3 + math.abs(dx)})
+                break
+            elseif isSolid(fx, fy) then
+                break -- hit a wall while falling
+            end
+        end
+    end
+
+    return result
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- A* using physics-aware neighbour function
+-- ─────────────────────────────────────────────────────────────
 local function astar(startX, startY, goalX, goalY)
-    -- Early-out checks
-    if isTileBlocked(goalX, goalY) then return nil end
+    -- Snap start/goal to valid standing positions
+    -- (walk caller should guarantee this, but be safe)
+    if not canStandAt(goalX, goalY) then
+        warn(string.format("[PTHT] Goal (%d,%d) is not a valid standing position", goalX, goalY))
+        return nil
+    end
     if startX == goalX and startY == goalY then return {} end
 
-    local closed  = {}
-    local cameFrom= {}
-    local gScore  = {}
+    local closed   = {}
+    local cameFrom = {}
+    local gScore   = {}
 
     pqReset()
 
     local function tileKey(x, y) return x * 10000 + y end
-    local function heuristic(x, y) return math.abs(x - goalX) + math.abs(y - goalY) end
+    local function heuristic(x, y)
+        -- Manhattan + vertical penalty (going up is expensive)
+        local dy = goalY - y
+        return math.abs(x - goalX) + math.abs(dy) + (dy > 0 and dy * 0.5 or 0)
+    end
 
     local sk = tileKey(startX, startY)
     gScore[sk] = 0
-    pqPush({ x = startX, y = startY, g = 0, f = heuristic(startX, startY) })
+    pqPush({x = startX, y = startY, g = 0, f = heuristic(startX, startY)})
 
-    local DIRS     = { {0,1}, {0,-1}, {1,0}, {-1,0} }
     local expanded = 0
 
     while not pqIsEmpty() do
         expanded = expanded + 1
         if expanded > ASTAR_MAX_NODES then
-            warn("[YSHub] A*: node limit hit, path truncated")
-            return nil
+            warn("[YSHub] A*: node limit hit"); return nil
         end
 
         local cur = pqPop()
@@ -1281,38 +1415,32 @@ local function astar(startX, startY, goalX, goalY)
         if closed[ck] then continue end
         closed[ck] = true
 
-        -- Goal reached — reconstruct path
         if cur.x == goalX and cur.y == goalY then
+            -- Reconstruct path
             local path = {}
             local node = ck
             while cameFrom[node] do
                 local parent = cameFrom[node]
-                table.insert(path, 1, { x = parent.x, y = parent.y })
+                table.insert(path, 1, {x = parent.x, y = parent.y})
                 node = tileKey(parent.x, parent.y)
             end
-            table.insert(path, { x = goalX, y = goalY })
+            table.insert(path, {x = goalX, y = goalY})
             return path
         end
 
-        for _, d in ipairs(DIRS) do
-            local nx, ny = cur.x + d[1], cur.y + d[2]
-            local nk     = tileKey(nx, ny)
-
-            if  nx >= 0 and nx <= WORLD_W
-            and ny >= 0 and ny <= WORLD_H
-            and not closed[nk]
-            and not isTileBlocked(nx, ny) then
-                local tg = cur.g + 1
-                if not gScore[nk] or tg < gScore[nk] then
-                    gScore[nk]    = tg
-                    cameFrom[nk]  = cur  -- store parent node (has .x .y)
-                    pqPush({ x = nx, y = ny, g = tg, f = tg + heuristic(nx, ny) })
-                end
+        for _, nb in ipairs(getNeighbours(cur.x, cur.y)) do
+            local nk = tileKey(nb.x, nb.y)
+            if closed[nk] then continue end
+            local tg = cur.g + nb.cost
+            if not gScore[nk] or tg < gScore[nk] then
+                gScore[nk]   = tg
+                cameFrom[nk] = cur
+                pqPush({x = nb.x, y = nb.y, g = tg, f = tg + heuristic(nb.x, nb.y)})
             end
         end
     end
 
-    return nil  -- No path found
+    return nil
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -1404,8 +1532,19 @@ local function walkToTile(targetX, targetY)
     end
     if not PTHT_Running then return false end
 
-    local startX = math.round(movement.Position.X / TILE_SIZE)
-    local startY = math.round(movement.Position.Y / TILE_SIZE)
+-- In walkToTile, replace the startX/startY calculation with:
+local startX = math.round(movement.Position.X / TILE_SIZE)
+local startY = math.round(movement.Position.Y / TILE_SIZE)
+
+-- Snap to ground if floating (server may have corrected position)
+if not canStandAt(startX, startY) then
+    -- Find ground below
+    for drop = 1, 10 do
+        if canStandAt(startX, startY - drop) then
+            startY = startY - drop; break
+        end
+    end
+end
 
     print("[PTHT] Walking ("..startX..","..startY..") -> ("..targetX..","..targetY..")")
 
@@ -1582,13 +1721,18 @@ local function walkToTile(targetX, targetY)
         print("📦 [PTHT] Using cached path: "..#path.." waypoints")
     end
 
+        local currentX = startX
+    local currentY = startY
+    
     for _, waypoint in ipairs(path) do
         if not PTHT_Running or _G.AutoPTHT == false then
             movement.VelocityX = 0
             return false
         end
         kickWatchdog()
-        if not lerpToTile(waypoint.x, waypoint.y) then return false end
+        if not stepOneTile(currentX, currentY, waypoint.x, waypoint.y) then return false end
+        currentX = waypoint.x
+        currentY = waypoint.y
     end
 
         movement.VelocityX = 0
