@@ -1295,19 +1295,19 @@ function AStar.find(sx, sy, gx, gy)
 
     local expanded = 0
     while _heapSz > 0 do
-        expanded = expanded + 1
+        local cur = heapPop()
+        local ck  = key(cur.x, cur.y)
+
+        if closed[ck] then continue end  -- skip duplicates WITHOUT counting them
+        closed[ck] = true
+
+        expanded = expanded + 1  -- only count REAL expansions
         if expanded > CFG.MAX_PATH_NODES then
             warn("[AStar] Node limit hit — path too long or area too large")
             return nil
         end
 
-                local cur = heapPop()
-        local ck  = key(cur.x, cur.y)
-        if not closed[ck] then
-            closed[ck] = true
-
         if cur.x == gx and cur.y == gy then
-            -- Reconstruct
             local path = {{x=gx, y=gy}}
             local node = ck
             while cameFrom[node] do
@@ -1318,21 +1318,20 @@ function AStar.find(sx, sy, gx, gy)
             return path
         end
 
-            for _, nb in ipairs(getNeighbours(cur.x, cur.y)) do
-        local nk = key(nb.x, nb.y)
-        if not closed[nk] then
-            local tg = cur.g + nb.cost
-            if not gScore[nk] or tg < gScore[nk] then
-                gScore[nk]   = tg
-                cameFrom[nk] = cur
-                                heapPush({x=nb.x, y=nb.y, g=tg, f=tg + h(nb.x, nb.y)})
+        for _, nb in ipairs(getNeighbours(cur.x, cur.y)) do
+            local nk = key(nb.x, nb.y)
+            if not closed[nk] then
+                local tg = cur.g + nb.cost
+                if not gScore[nk] or tg < gScore[nk] then
+                    gScore[nk]   = tg
+                    cameFrom[nk] = cur
+                    heapPush({x=nb.x, y=nb.y, g=tg, f=tg + h(nb.x, nb.y)})
+                end
             end
-        end  -- end if not closed[nk]
-    end  -- end for neighbors
-        end  -- end if not closed[ck]
-    end  -- end while
+        end
+    end
 
-    return nil  -- No path found
+    return nil
 end
 
 -- ─────────────────────────────────────────────────────────────
