@@ -1158,8 +1158,15 @@ local function prebakeCollision()
     local count, blocked = 0, 0
     for x = 0, WORLD_W do
         for y = 0, WORLD_H do
-            local tileId = WorldManager.GetTile(x, y, 1)
-            local solid  = (tileId ~= nil and not isSapling(tileId))
+            -- Check BOTH layers for blocks
+            local tile1 = WorldManager.GetTile(x, y, 1)
+            local tile2 = WorldManager.GetTile(x, y, 2)
+            
+            -- Tile is solid if there's ANY non-sapling block on either layer
+            local solid = false
+            if tile1 and not isSapling(tile1) then solid = true end
+            if tile2 and not isSapling(tile2) then solid = true end
+            
             tileCache[x * 10000 + y] = solid
             if solid then blocked = blocked + 1 end
             count = count + 1
