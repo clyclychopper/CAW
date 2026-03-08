@@ -1081,11 +1081,11 @@ local function isTileBlocked(x, y)
     return tileCache[x * 10000 + y] == true
 end
 
--- Returns true if player can stand at this position (tile below is solid)
-local function canStandAt(x, y)
+-- Returns true if position is valid (not blocked, within bounds)
+-- You CAN move through air, just not through solid blocks
+local function isValidPosition(x, y)
     if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then return false end
-    if isTileBlocked(x, y) then return false end
-    return isTileBlocked(x, y - 1)
+    return not isTileBlocked(x, y)
 end
 
 -- Bakes the collision cache for the farm region + padding.
@@ -1377,12 +1377,11 @@ end
 -- A* using physics-aware neighbour function
 -- ─────────────────────────────────────────────────────────────
 local function astar(startX, startY, goalX, goalY)
-    -- Snap start/goal to valid standing positions
-    -- (walk caller should guarantee this, but be safe)
-    if not canStandAt(goalX, goalY) then
-        warn(string.format("[PTHT] Goal (%d,%d) is not a valid standing position", goalX, goalY))
-        return nil
-    end
+      -- Check goal is not inside a solid block (can be in air for jumping)
+  if isTileBlocked(goalX, goalY) then
+      warn(string.format("[PTHT] Goal (%d,%d) is inside a solid block", goalX, goalY))
+      return nil
+  end
     if startX == goalX and startY == goalY then return {} end
 
     local closed   = {}
@@ -1536,15 +1535,11 @@ local function walkToTile(targetX, targetY)
 local startX = math.round(movement.Position.X / TILE_SIZE)
 local startY = math.round(movement.Position.Y / TILE_SIZE)
 
--- Snap to ground if floating (server may have corrected position)
-if not canStandAt(startX, startY) then
-    -- Find ground below
-    for drop = 1, 10 do
-        if canStandAt(startX, startY - drop) then
-            startY = startY - drop; break
-        end
-    end
-end
+  -- Check start is not inside a solid block
+  if isTileBlocked(startX, startY) then
+      warn("[PTHT] Start position is inside a block")
+      return false
+  end
 
     print("[PTHT] Walking ("..startX..","..startY..") -> ("..targetX..","..targetY..")")
 
