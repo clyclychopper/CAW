@@ -1316,19 +1316,14 @@ local function astar(startX, startY, goalX, goalY)
 end
 
 -- ─────────────────────────────────────────────────────────────
--- LERP WALK — moves player smoothly tile-by-tile
---
--- WHY LERP AND NOT VELOCITY:
--- This game processes movement by reading movement.Position directly.
--- Writing VelocityX/Y without a physics integrator that reads them
--- means the player never actually moves. Direct position lerp is
--- the correct approach and matches how the game's own animations work.
---
--- Each tile transition is animated over WALK_SPT seconds using
--- smoothstep easing so movement looks organic, not robotic.
+-- LERP WALK
+-- Key insight: X and Y movement are physically different in this
+-- game. X is horizontal walking (VelocityX). Y is vertical/jump.
+-- We move them in SEPARATE phases to avoid diagonal AC detection,
+-- and handle Y specially since going "up" requires jump physics.
 -- ─────────────────────────────────────────────────────────────
-local WALK_SPT = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled)
-    and 0.20 or 0.14
+local WALK_SPT  = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) and 0.20 or 0.14
+local CLIMB_SPT = 0.18  -- slightly slower for vertical, gives server time to validate
 
 local function smoothstep(t)
     t = math.clamp(t, 0, 1)
@@ -1337,46 +1332,95 @@ end
 
 local function lerp(a, b, t) return a + (b - a) * t end
 
+-- Lerp along ONE axis only, yielding each heartbeat
+local function lerpAxis(getter, setter, dest, duration, isVertical)
+    local src = getter()
+    if math.abs(src - dest) < 0.05 then
+        setter(dest)
+        return true
+    end
+
+    local elapsed = 0
+    while elapsed < duration do
+        if not PTHT_Running or not _G.AutoPTHT then return false end
+        local dt = RunService.Heartbeat:Wait()
+        elapsed  = elapsed + dt
+        local t  = smoothstep(math.min(elapsed / duration, 1))
+        setter(lerp(src, dest, t))
+
+        if isVertical then
+            -- Going up: act like a jump (not grounded, positive Y velocity)
+            -- Going down: act like falling (not grounded, negative Y velocity)
+            local dir = dest > src and 1 or -1
+            movement.Grounded  = false
+            movement.VelocityY = dir * (TILE_SIZE / CLIMB_SPT)
+            movement.VelocityX = 0
+        else
+            movement.Grounded  = true
+            movement.VelocityY = 0
+            -- Only set VelocityX for meaningful horizontal movement
+            local dir = dest > src and 1 or -1
+            movement.VelocityX = dir * (TILE_SIZE / WALK_SPT)
+        end
+    end
+
+    setter(dest)
+    return true
+end
+
 local function lerpToTile(targetX, targetY)
-    if not movement then 
-        warn("[PTHT] ❌ lerpToTile: movement is nil")
-        return false 
+    if not movement then
+        warn("[PTHT] lerpToTile: movement is nil")
+        return false
     end
 
     local destX = targetX * TILE_SIZE
     local destY = targetY * TILE_SIZE
-    local srcX  = movement.Position.X
-    local srcY  = movement.Position.Y
 
-    if math.abs(srcX - destX) < 0.05 and math.abs(srcY - destY) < 0.05 then
+    -- Snap if already there
+    if math.abs(movement.Position.X - destX) < 0.05
+    and math.abs(movement.Position.Y - destY) < 0.05 then
         movement.Position = Vector3.new(destX, destY, 0)
+        movement.VelocityX = 0
+        movement.Grounded  = true
         return true
     end
 
-    local velX = (destX > srcX and 1 or destX < srcX and -1 or 0)
-               * (TILE_SIZE / WALK_SPT)
-    local elapsed = 0
+    local moveX = math.abs(movement.Position.X - destX) > 0.05
+    local moveY = math.abs(movement.Position.Y - destY) > 0.05
 
-    -- Single loop — no Connect, no race condition
-    while elapsed < WALK_SPT do
-        if not PTHT_Running or not _G.AutoPTHT then
-            movement.VelocityX = 0
-            return false
-        end
-
-        local dt = RunService.Heartbeat:Wait()
-        elapsed  = elapsed + dt
-
-        local t = smoothstep(math.min(elapsed / WALK_SPT, 1))
-
-        movement.Position  = Vector3.new(lerp(srcX, destX, t), lerp(srcY, destY, t), 0)
+    -- Phase 1: Horizontal movement (if needed)
+    if moveX then
+        local ok = lerpAxis(
+            function() return movement.Position.X end,
+            function(v) movement.Position = Vector3.new(v, movement.Position.Y, 0) end,
+            destX,
+            WALK_SPT,
+            false  -- horizontal
+        )
+        if not ok then return false end
+        -- Brief settle between axes — prevents AC from seeing impossible transitions
+        movement.VelocityX = 0
         movement.Grounded  = true
-        movement.VelocityY = 0
-        movement.VelocityX = velX
+        if moveY then RunService.Heartbeat:Wait() end
     end
 
-        movement.Position  = Vector3.new(destX, destY, 0)
+    -- Phase 2: Vertical movement (if needed)
+    if moveY then
+        local ok = lerpAxis(
+            function() return movement.Position.Y end,
+            function(v) movement.Position = Vector3.new(destX, v, 0) end,
+            destY,
+            CLIMB_SPT,
+            true  -- vertical
+        )
+        if not ok then return false end
+    end
+
+    -- Clean stop
+    movement.Position  = Vector3.new(destX, destY, 0)
     movement.VelocityX = 0
+    movement.VelocityY = 0
     movement.Grounded  = true
     return true
 end
