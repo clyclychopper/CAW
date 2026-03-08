@@ -1652,12 +1652,17 @@ local function doPlant(ctx)
             end
         end
     end
-    print("[PLANT] Found "..#emptyList.." empty spots")
-        table.sort(emptyList, function(a, b)
-        if a.y ~= b.y then return a.y < b.y end
-        if a.x == b.x then return false end
-        local row = math.floor((a.y - ctx.startY) / 2)
-        return (row % 2 == 0) and (a.x < b.x) or (a.x > b.x)
+        print("[PLANT] Found "..#emptyList.." empty spots")
+    -- Pre-calculate sort indices for zigzag pattern
+    for _, spot in ipairs(emptyList) do
+        local row = math.floor((spot.y - ctx.startY) / 2)
+        local col = spot.x - ctx.minX
+        -- For even rows, use x as-is; for odd rows, reverse x
+        local sortX = (row % 2 == 0) and col or (ctx.maxX - ctx.minX - col)
+        spot.sortKey = row * 10000 + sortX
+    end
+    table.sort(emptyList, function(a, b)
+        return a.sortKey < b.sortKey
     end)
         for i, spot in ipairs(emptyList) do
         if not PTHT_Running or not _G.AutoPTHT then print("[PLANT] Stopped"); return end
