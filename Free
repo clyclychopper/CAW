@@ -1024,9 +1024,23 @@
     local MOVE_DELAY_MOBILE = 0.3
 
     local function isSolid(x, y)
-        if x < 0 or y < 0 or x > WORLD_W or y > WORLD_H then return true end
-        return tileCache[x * 10000 + y] == true
+    if x < 0 or y < 0 or x > WORLD_W or y > WORLD_H then return true end
+    
+    -- Check cache first
+    if tileCache[x * 10000 + y] == true then return true end
+    
+    -- Real-time check for blocks (cache might be outdated)
+    if WorldManager then
+        local tile1 = WorldManager.GetTile(x, y, 1)
+        local tile2 = WorldManager.GetTile(x, y, 2)
+        
+        -- Solid if there's a non-sapling block
+        if tile1 and not isSapling(tile1) then return true end
+        if tile2 and not isSapling(tile2) then return true end
     end
+    
+    return false
+end
 
     local function findPath(sx, sy, gx, gy)
         print("[DEBUG] findPath called: ("..sx..","..sy..") -> ("..gx..","..gy..")")
@@ -1881,44 +1895,67 @@ end
             setWatchdogExtended(false)
             return
         end
-        print("[BREAK] Breaking "..#tilesToBreak.." tiles")
-        local broken      = {}
-        local attempts    = {}
-        local MAX_ATTEMPTS = 8
-        for _, t in ipairs(tilesToBreak) do attempts[t.x * 10000 + t.y] = 0 end
-        local allDone    = false
-        local cycleStart = safeGetServerTime()
-        local iter       = 0
-        while PTHT_Running and _G.AutoPTHT and not allDone do
-            iter = iter + 1
-            if iter % 5 == 0 and (safeGetServerTime() - cycleStart) > 30 then
-                warn("[YSHub] Break cycle timeout"); break
-            end
-            kickWatchdog()
-            allDone = true
-            for _, tile in ipairs(tilesToBreak) do
-                if not PTHT_Running or not _G.AutoPTHT then break end
-                local k = tile.x * 10000 + tile.y
-                if broken[k] then
-                    -- already done, skip
+            print("[BREAK] Breaking "..#tilesToBreak.." tiles")
+    
+    -- CRITICAL: Stay in middle position during entire break cycle
+    movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
+    movement.Grounded = true
+    movement.VelocityX = 0
+    movement.VelocityY = 0
+    task.wait(0.2)
+    
+    local broken      = {}
+    local attempts    = {}
+    local MAX_ATTEMPTS = 8
+    for _, t in ipairs(tilesToBreak) do attempts[t.x * 10000 + t.y] = 0 end
+    local allDone    = false
+    local cycleStart = safeGetServerTime()
+    local iter       = 0
+    
+    while PTHT_Running and _G.AutoPTHT and not allDone do
+        iter = iter + 1
+        if iter % 5 == 0 and (safeGetServerTime() - cycleStart) > 30 then
+            warn("[YSHub] Break cycle timeout"); break
+        end
+        kickWatchdog()
+        allDone = true
+        
+        for _, tile in ipairs(tilesToBreak) do
+            if not PTHT_Running or not _G.AutoPTHT then break end
+            local k = tile.x * 10000 + tile.y
+            
+            if broken[k] then
+                -- already done, skip
+            else
+                local stillThere = WorldManager.GetTile(tile.x, tile.y, 1)
+                                or WorldManager.GetTile(tile.x, tile.y, 2)
+                if not stillThere then
+                    broken[k] = true; tileCache[k] = false
+                elseif attempts[k] >= MAX_ATTEMPTS then
+                    broken[k] = true
+                    warn("[YSHub] Tile ("..tile.x..","..tile.y..") max attempts")
                 else
-                    local stillThere = WorldManager.GetTile(tile.x, tile.y, 1)
-                                    or WorldManager.GetTile(tile.x, tile.y, 2)
-                    if not stillThere then
-                        broken[k] = true; tileCache[k] = false
-                    elseif attempts[k] >= MAX_ATTEMPTS then
-                        broken[k] = true
-                        warn("[YSHub] Tile ("..tile.x..","..tile.y..") max attempts")
-                    else
-                        allDone = false
-                        attempts[k] = attempts[k] + 1
-                        harvestSapling(tile.x, tile.y)
-                        local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-                        task.wait(isMob and 0.3 or math.max(0.05, ctx.breakSpeed))
+                    allDone = false
+                    attempts[k] = attempts[k] + 1
+                    
+                    -- CRITICAL: Lock position before each break
+                    movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
+                    movement.Grounded = true
+                    movement.VelocityX = 0
+                    movement.VelocityY = 0
+                    
+                    -- Break from stationary position
+                    local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
+                    if remote then
+                        pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
                     end
+                    
+                    local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+                    task.wait(isMob and 0.3 or math.max(0.05, ctx.breakSpeed))
                 end
             end
         end
+    end
             _lastBreakCycleTime = safeGetServerTime()
         invalidateTileCache()
         invalidateFarmCache()
@@ -4072,4 +4109,4 @@ end
         end
         tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
     end)
-    print("vbvS")
+    print("YS YS YS YS YS YS")
