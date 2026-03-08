@@ -1022,7 +1022,7 @@ Hub.TILE_SIZE       = 4.5
 Hub.WORLD_W         = 120
 Hub.WORLD_H         = 70
 Hub.MOVE_DELAY      = 0.1
-Hub.ASTAR_MAX_NODES = 15000
+Hub.ASTAR_MAX_NODES = 25000
 Hub.MAX_JUMP        = 3
 Hub.MAX_FALL        = 20
 Hub.getGrowTime = getGrowTime
@@ -1304,10 +1304,10 @@ function AStar.find(sx, sy, gx, gy)
             return nil
         end
 
-        local cur = heapPop()
+                local cur = heapPop()
         local ck  = key(cur.x, cur.y)
-        if closed[ck] then continue end
-        closed[ck] = true
+        if not closed[ck] then
+            closed[ck] = true
 
         if cur.x == gx and cur.y == gy then
             -- Reconstruct
@@ -1321,17 +1321,19 @@ function AStar.find(sx, sy, gx, gy)
             return path
         end
 
-        for _, nb in ipairs(getNeighbours(cur.x, cur.y)) do
-            local nk = key(nb.x, nb.y)
-            if closed[nk] then continue end
+            for _, nb in ipairs(getNeighbours(cur.x, cur.y)) do
+        local nk = key(nb.x, nb.y)
+        if not closed[nk] then
             local tg = cur.g + nb.cost
             if not gScore[nk] or tg < gScore[nk] then
                 gScore[nk]   = tg
                 cameFrom[nk] = cur
-                heapPush({x=nb.x, y=nb.y, g=tg, f=tg + h(nb.x, nb.y)})
+                                heapPush({x=nb.x, y=nb.y, g=tg, f=tg + h(nb.x, nb.y)})
             end
-        end
-    end
+        end  -- end if not closed[nk]
+    end  -- end for neighbors
+        end  -- end if not closed[ck]
+    end  -- end while
 
     return nil  -- No path found
 end
@@ -1728,20 +1730,27 @@ end
 -- COLLISION BAKING
 local function prebakeCollision()
     if not WorldManager then return false end
-    invalidateTileCache()
+    
+    -- Build to temporary table for atomic assignment
+    local tempCache = {}
     local count = 0
+    
     for x = 0, WORLD_W do
         for y = 0, WORLD_H do
             local tileId = WorldManager.GetTile(x, y, 1)
             if tileId and not isSapling(tileId) then
-                tileCache[x * 10000 + y] = true
+                tempCache[x * 10000 + y] = true
             else
-                tileCache[x * 10000 + y] = false
+                tempCache[x * 10000 + y] = false
             end
             count = count + 1
         end
         if x % 10 == 0 then task.wait() end
     end
+    
+    -- Atomic assignment - cache is never partially populated
+    tileCache = tempCache
+    tileCacheVersion = tileCacheVersion + 1
         local blockedCount = 0
     local passableCount = 0
     for k, v in pairs(tileCache) do
