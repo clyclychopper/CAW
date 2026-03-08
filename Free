@@ -1078,15 +1078,17 @@ local function invalidateTileCache()
     tileCacheVersion = tileCacheVersion + 1
 end
 
--- FIX 1: Renamed from isTileBlocked → isSolid (used everywhere consistently)
--- A tile is solid if it's in tileCache as true OR out of bounds.
--- TILE HELPERS (simplified - no standability filter)
-local function isSolid(x, y)
-    if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then
-        return true
-    end
-    return tileCache[x * 10000 + y] == true
-end
+  -- FIX 1: Renamed from isTileBlocked → isSolid (used everywhere consistently)
+  -- A tile is solid if it's in tileCache as true OR out of bounds.
+  -- CRITICAL: Uncached tiles (nil) default to SOLID - never clip through unknowns
+  local function isSolid(x, y)
+      if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then
+          return true
+      end
+      local cached = tileCache[x * 10000 + y]
+      if cached == nil then return true end  -- Uncached = assume solid (safe fallback)
+      return cached == true
+  end
 
 local function isAir(x, y)
     return not isSolid(x, y)
@@ -1287,39 +1289,30 @@ local function pqIsEmpty() return _pqSize == 0 end
 -- `continue` only exists in Luau via `goto continue` + label.
 -- This was silently skipping ALL fall neighbours.
 -- ─────────────────────────────────────────────────────────────
--- NEIGHBOUR GENERATION (no standability checks)
+-- NEIGHBOUR GENERATION - 4-directional single-tile only
+-- CRITICAL: Every edge is exactly 1 tile so stepOneTile never crosses unchecked space
 local function getNeighbours(x, y)
     local result = {}
-
-    -- Walk left/right
-    for _, dx in ipairs({-1, 1}) do
-        local nx = x + dx
-        if canMoveTo(nx, y) then
-            table.insert(result, {x = nx, y = y, cost = 1})
+    
+    -- 4-directional single-tile movement only
+    local dirs = {{1,0}, {-1,0}, {0,1}, {0,-1}}
+    for _, d in ipairs(dirs) do
+        local nx = x + d[1]
+        local ny = y + d[2]
+        if canMoveTo(nx, ny) then
+            table.insert(result, {x = nx, y = ny, cost = 1})
         end
     end
+    
+    return result
+end
 
-    -- Jump up (just needs air)
-    for h = 1, MAX_JUMP do
-        local ny = y + h
-        if not canMoveTo(x, ny) then break end
-        table.insert(result, {x = x, y = ny, cost = h})
-        for _, dx in ipairs({-1, 1}) do
-            local nx = x + dx
-            if canMoveTo(nx, ny) then
-                table.insert(result, {x = nx, y = ny, cost = h + 0.5})
-            end
-        end
-    end
-
-    -- Fall down
-    for _, dx in ipairs({-1, 0, 1}) do
-        for drop = 1, MAX_FALL do
-            local fx = x + dx
-            local fy = y - drop
-            if fy < 0 then break end
-            if not canMoveTo(fx, fy) then break end
-            table.insert(result, {x = fx, y = fy, cost = drop * 0.3 + math.abs(dx)})
+-- Old complex jump/fall logic removed - caused pathfinder to route through uncached tiles
+-- The simplified version ensures every path step is exactly 1 tile
+-- stepOneTile handles the physics (tweening) for each single-tile move
+local function _unused_old_getNeighbours_for_reference(x, y)
+    -- This was the old implementation with multi-tile jumps/falls
+    -- Removed because it caused A* to generate paths crossing uncached regions
         end
     end
 
@@ -4389,4 +4382,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YS")
+print("YS YS YS YS YS YS")
