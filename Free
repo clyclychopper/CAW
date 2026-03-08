@@ -1961,7 +1961,7 @@ local function prebakeCollision()
                     elseif attempts[k] >= MAX_ATTEMPTS then
                         broken[k] = true
                         warn("[YSHub] Tile ("..tile.x..","..tile.y..") max attempts")
-                    else
+                                        else
                         allDone = false
                         attempts[k] = attempts[k] + 1
                         
@@ -1972,11 +1972,21 @@ local function prebakeCollision()
                         
                         local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
                         if remote then
+                            -- Hit twice per attempt for safety
+                            pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
+                            task.wait(0.05)
                             pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
                         end
                         
                         local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
                         task.wait(isMob and 0.3 or math.max(0.05, ctx.breakSpeed))
+                        
+                        -- Extra verification after hitting
+                        task.wait(0.1)
+                        if not (WorldManager.GetTile(tile.x, tile.y, 1) or WorldManager.GetTile(tile.x, tile.y, 2)) then
+                            broken[k] = true
+                            tileCache[k] = false
+                        end
                     end
                 end
             end
@@ -1989,10 +1999,10 @@ local function prebakeCollision()
         for _ in pairs(broken) do bCount = bCount + 1 end
         print("[BREAK] Broke "..bCount.." tiles")
         
-        -- Wait for drops to spawn
+                -- Wait for drops to spawn
         task.wait(1.5)
         
-        -- Collect drops by directly interpolating to each one
+        -- Collect drops using pathfinding
         print("[BREAK] Collecting drops...")
         local collected = 0
         local breakAreaMinX = midX - 2
@@ -2000,23 +2010,26 @@ local function prebakeCollision()
         local breakAreaMinY = ctx.endY + 1
         local breakAreaMaxY = ctx.endY + 2
         
+        -- Gather all drop positions in break area
+        local dropPositions = {}
         for _, drop in ipairs(workspace.Drops:GetChildren()) do
-            if not PTHT_Running or not _G.AutoPTHT then break end
             if drop and drop.Parent then
                 local dropTileX = math.round(drop.Position.X / TILE_SIZE)
                 local dropTileY = math.round(drop.Position.Y / TILE_SIZE)
                 
-                -- Only collect drops from the break area
                 if dropTileX >= breakAreaMinX and dropTileX <= breakAreaMaxX
                 and dropTileY >= breakAreaMinY and dropTileY <= breakAreaMaxY then
-                    -- Directly interpolate to drop position
-                                        movement.Position = Vector3.new(drop.Position.X, drop.Position.Y, 0)
-                    movement.Grounded = true
-                    movement.VelocityX = 0
-                    movement.VelocityY = 0
-                    task.wait(0.02)
-                    collected = collected + 1
+                    table.insert(dropPositions, {x = dropTileX, y = dropTileY})
                 end
+            end
+        end
+        
+        -- Walk to each drop position
+        for _, pos in ipairs(dropPositions) do
+            if not PTHT_Running or not _G.AutoPTHT then break end
+            if walkToTile(pos.x, pos.y) then
+                task.wait(0.15)
+                collected = collected + 1
             end
         end
         
