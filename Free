@@ -997,7 +997,7 @@ local itemDataCache = _G.itemDataCache
 
 local _lastBlockDropTime   = 0
 local _lastSaplingDropTime = 0
-local DROP_ZONE_AVOID_DURATION = 4
+local DROP_ZONE_AVOID_DURATION = 10  -- Don't collect drops for 10 seconds
 
 local _lastDropScan       = 0
 local _cachedDrops        = {}
@@ -1349,15 +1349,15 @@ local function collectDropsAndGems(instant, centerPos, radius, skipOwnDropCheck)
         local now = os.clock()
         if _G.BlockDropX and _G.BlockDropY
         and (now - _lastBlockDropTime) < DROP_ZONE_AVOID_DURATION then
-            if math.abs(pos.X - _G.BlockDropX  * TILE_SIZE) < TILE_SIZE * 6
-            and math.abs(pos.Y - _G.BlockDropY * TILE_SIZE) < TILE_SIZE * 6 then
+                  if math.abs(pos.X - _G.BlockDropX  * TILE_SIZE) < TILE_SIZE * 3
+      and math.abs(pos.Y - _G.BlockDropY * TILE_SIZE) < TILE_SIZE * 3 then
                 return true
             end
         end
         if _G.SaplingDropX and _G.SaplingDropY
         and (now - _lastSaplingDropTime) < DROP_ZONE_AVOID_DURATION then
-            if math.abs(pos.X - _G.SaplingDropX * TILE_SIZE) < TILE_SIZE * 6
-            and math.abs(pos.Y - _G.SaplingDropY * TILE_SIZE) < TILE_SIZE * 6 then
+                  if math.abs(pos.X - _G.SaplingDropX * TILE_SIZE) < TILE_SIZE * 3
+      and math.abs(pos.Y - _G.SaplingDropY * TILE_SIZE) < TILE_SIZE * 3 then
                 return true
             end
         end
