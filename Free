@@ -1126,8 +1126,10 @@ local function walkToTile(gx, gy)
             kickWatchdog()
         end
 
-        -- Debug: log each step
-        print("[WALK STEP] "..i.." ("..tile.x..","..tile.y..") solid="..tostring(isSolid(tile.x,tile.y)))
+    local prevTile = i > 1 and path[i-1] or nil
+if prevTile then
+    print("[WALK STEP] "..i.." ("..tile.x..","..tile.y..") | prev=("..prevTile.x..","..prevTile.y..") | dy="..(tile.y - prevTile.y).." | solid="..tostring(isSolid(tile.x,tile.y)))
+end
 
         -- Validate tile is passable before moving
         if isSolid(tile.x, tile.y) then
