@@ -1605,12 +1605,18 @@ local function walkToTile(targetX, targetY)
             return walkToTile(targetX, targetY)
         end
 
-        if not stepOneTile(curX, curY, nextX, nextY) then
+                if not stepOneTile(curX, curY, nextX, nextY) then
+            warn("[PTHT] Failed step "..i.."/"..#path)
             return false
         end
+        
+        -- CRITICAL: Wait after EACH tile so movement is SMOOTH and SEQUENTIAL
+        -- This prevents the bot from looking like it's flying/teleporting
+        task.wait(0.2)
     end
 
     movement.VelocityX = 0
+    movement.VelocityY = 0
     movement.Grounded  = true
     return true
 end
@@ -4375,4 +4381,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YS YS YS YS YS YS")
+print("YShub")
