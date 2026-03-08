@@ -1019,8 +1019,14 @@ end
 
 local function findPath(sx, sy, gx, gy)
     print("[DEBUG] findPath called: ("..sx..","..sy..") -> ("..gx..","..gy..")")
+    
+    -- Check what's at the goal
+    local goalTileId = WorldManager and WorldManager.GetTile(gx, gy, 1)
+    print("[DEBUG] Goal tile ID: "..tostring(goalTileId))
+    print("[DEBUG] Goal is sapling: "..tostring(goalTileId and isSapling(goalTileId)))
+    
     print("[DEBUG] Start solid: "..tostring(isSolid(sx,sy)).." Goal solid: "..tostring(isSolid(gx,gy)))
-    print("[DEBUG] Cache size: "..tostring(#tileCache))
+    print("[DEBUG] Start cache: "..tostring(tileCache[sx*10000+sy]).." Goal cache: "..tostring(tileCache[gx*10000+gy]))
     
     if sx == gx and sy == gy then return {} end
     if isSolid(sx, sy) then print("[DEBUG] START is solid!"); return nil end
