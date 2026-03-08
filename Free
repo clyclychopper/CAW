@@ -1681,10 +1681,18 @@ local function doBreakCycle(ctx)
     local nowEntry = safeGetServerTime()
     if (nowEntry - _lastBreakCycleTime) < BREAK_CYCLE_COOLDOWN then return end
     if not WorldManager or not movement then return end
+    
+        -- Walk to middle position BELOW the break area (not ON the blocks)
     local midX = math.floor((ctx.minX + ctx.maxX) / 2)
-    if not walkToTile(midX, ctx.endY + 1) then
+    local midY = ctx.endY  -- Stand BELOW the break area, not on it
+    print("[DEBUG] Break cycle: walking to middle ("..midX..","..midY..")")
+    
+    if not walkToTile(midX, midY) then
+        print("[DEBUG] Failed to walk to middle position")
         _lastBreakCycleTime = safeGetServerTime(); return
     end
+    
+    print("[DEBUG] At middle position, starting to break blocks")
     setWatchdogExtended(true)
     for xOff = -2, 2 do
         if not PTHT_Running or not _G.AutoPTHT then return end
