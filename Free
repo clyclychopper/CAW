@@ -1139,9 +1139,9 @@ local function walkToTile(gx, gy)
         return false
     end
     
-    -- Smooth interpolation settings
-    local stepsPerTile = isMobileExecutor and 6 or 8
-    local delayPerStep = isMobileExecutor and 0.025 or 0.02
+        -- Smooth interpolation settings (OPTIMIZED FOR SPEED)
+    local stepsPerTile = isMobileExecutor and 4 or 5
+    local delayPerStep = isMobileExecutor and 0.015 or 0.01
     
     -- Move tile-by-tile with smooth interpolation
     for i, tile in ipairs(path) do
@@ -1542,18 +1542,18 @@ local function prebakeCollision()
     local function harvestSapling(x, y)
         local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
         if not remote then return false end
-                -- Stabilize position once before harvesting
+                                -- Stabilize position once before harvesting (FASTER)
         if movement then
             movement.Grounded = true
             movement.VelocityX = 0
             movement.VelocityY = 0
             movement.Position = Vector3.new(x * TILE_SIZE, y * TILE_SIZE, 0)
-            task.wait(0.2)
+            task.wait(0.1)
         end
         
         local pos   = Vector2.new(x, y)
         local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-        local delay   = isMob and 0.35 or 0.2
+        local delay   = isMob and 0.25 or 0.15
         local maxHits = isMob and 10 or 8
         
         for hit = 1, maxHits do
@@ -1566,10 +1566,10 @@ local function prebakeCollision()
             
             if hit % 3 == 0 then kickWatchdog() end
             
-            pcall(function() remote:FireServer(pos) end)
+                        pcall(function() remote:FireServer(pos) end)
             task.wait(delay)
         end
-        task.wait(isMob and 0.5 or 0.3)
+        task.wait(isMob and 0.3 or 0.2)
         if not (WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)) then
             tileCache[x * 10000 + y] = false
             markInventoryDirty()
@@ -1811,12 +1811,12 @@ local function prebakeCollision()
             -- Re-check tile is still empty before walking
             if not WorldManager.GetTile(spot.x, spot.y, 1) then
                                         if walkToTile(spot.x, spot.y) then
-                    -- CRITICAL: Full stabilization before planting
+                                        -- CRITICAL: Full stabilization before planting (FASTER)
                     movement.Grounded = true
                     movement.VelocityX = 0
                     movement.VelocityY = 0
                     movement.Position = Vector3.new(spot.x * TILE_SIZE, spot.y * TILE_SIZE, 0)
-                    task.wait(isMobileExecutor and 0.5 or 0.25)
+                    task.wait(isMobileExecutor and 0.25 or 0.15)
                     
                     plantSapling(spot.x, spot.y, ctx.saplingID)
                     task.wait(ctx.plantSpeed)
@@ -1970,19 +1970,19 @@ local function prebakeCollision()
                         movement.VelocityX = 0
                         movement.VelocityY = 0
                         
-                        local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
+                                                local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
                         if remote then
-                            -- Hit twice per attempt for safety
+                            -- Hit twice per attempt for safety (FASTER)
                             pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
-                            task.wait(0.05)
+                            task.wait(0.03)
                             pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
                         end
                         
                         local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-                        task.wait(isMob and 0.3 or math.max(0.05, ctx.breakSpeed))
+                        task.wait(isMob and 0.2 or math.max(0.03, ctx.breakSpeed))
                         
-                        -- Extra verification after hitting
-                        task.wait(0.1)
+                        -- Extra verification after hitting (FASTER)
+                        task.wait(0.05)
                         if not (WorldManager.GetTile(tile.x, tile.y, 1) or WorldManager.GetTile(tile.x, tile.y, 2)) then
                             broken[k] = true
                             tileCache[k] = false
@@ -2019,20 +2019,20 @@ local function prebakeCollision()
                 movement.VelocityX = 0
                 movement.VelocityY = 0
                 
-                local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
+                                local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
                 if remote then
-                    -- Hit 5 times to ensure it breaks
+                    -- Hit 5 times to ensure it breaks (FASTER)
                     for hit = 1, 5 do
                         pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
-                        task.wait(0.1)
+                        task.wait(0.05)
                     end
                 end
-                task.wait(0.2)
+                task.wait(0.1)
             end
         end
         
-        -- Wait for drops to spawn
-        task.wait(1.5)
+                -- Wait for drops to spawn (FASTER)
+        task.wait(1.0)
         
         -- Collect drops using smooth pathfinding
         print("[BREAK] Collecting drops...")
@@ -2068,9 +2068,9 @@ local function prebakeCollision()
         -- Walk to each drop position with smooth interpolation
         for i, pos in ipairs(dropPositions) do
             if not PTHT_Running or not _G.AutoPTHT then break end
-            print("[BREAK] Collecting drop "..i.."/"..#dropPositions.." at ("..pos.x..","..pos.y..")")
+                        print("[BREAK] Collecting drop "..i.."/"..#dropPositions.." at ("..pos.x..","..pos.y..")")
             if walkToTile(pos.x, pos.y) then
-                task.wait(0.3)
+                task.wait(0.15)
                 collected = collected + 1
             end
         end
