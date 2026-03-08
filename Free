@@ -2130,9 +2130,9 @@ local _, autoPTHTAPI = mkToggle(b1, "Enable Auto Farm", false, 1, function(on)
             if _G.UIElements.statusDot       then _G.UIElements.statusDot.BackgroundColor3 = T.red end
             return
         end
-                  _G.AutoPTHT = true
-          Hub.StartPTHT(movement, WorldManager, ItemsManager, Inventory)
-          if _G.UIElements.pthtBadgeText   then _G.UIElements.pthtBadgeText.Text = "RUNNING"; _G.UIElements.pthtBadgeText.TextColor3 = T.green end
+        _G.AutoPTHT = true
+        Hub.StartPTHT()
+        if _G.UIElements.pthtBadgeText   then _G.UIElements.pthtBadgeText.Text = "RUNNING"; _G.UIElements.pthtBadgeText.TextColor3 = T.green end
         if _G.UIElements.statusDetailLbl then _G.UIElements.statusDetailLbl.Text = "" end
         if _G.UIElements.statusDot       then _G.UIElements.statusDot.BackgroundColor3 = T.green end
     else
@@ -2467,7 +2467,6 @@ local _mmBuilding = false
 local function updateMinimap()
     if _mmBuilding then return end
     _mmBuilding = true
-    
     task.spawn(function()
         local minX   = _G.MinX
         local maxX   = _G.MaxX
@@ -2475,13 +2474,10 @@ local function updateMinimap()
         local endY   = _G.EndY
 
         if not minX or not maxX or not startY or not endY then
-            mmNoArea.Visible = true
-            mmCoordLabel.Text = ""
+            mmNoArea.Visible = true; mmCoordLabel.Text = ""
             for _, t in ipairs(mmActiveTiles) do releaseTile(t) end
-            mmActiveTiles = {}
-            mmPlayer.Visible = false
-            _mmBuilding = false
-            return
+            mmActiveTiles = {}; mmPlayer.Visible = false
+            _mmBuilding = false; return
         end
         mmNoArea.Visible = false
 
@@ -2493,11 +2489,11 @@ local function updateMinimap()
         if mapW <= 0 or mapH <= 0 then _mmBuilding = false; return end
 
         local cellSz = math.max(2, math.min(math.floor(mapW/farmW), math.floor(mapH/farmH)))
-        local gap    = math.max(0, math.floor(cellSz * 0.1))
-        local totalW = farmW * cellSz
-        local totalH = farmH * cellSz
-        local offX   = PAD + math.floor((mapW - totalW) / 2)
-        local offY   = PAD + 20
+        local gap     = math.max(0, math.floor(cellSz * 0.1))
+        local totalW  = farmW * cellSz
+        local totalH  = farmH * cellSz
+        local offX    = PAD + math.floor((mapW - totalW) / 2)
+        local offY    = PAD + 20
 
         mmCanvas.Size     = UDim2.new(0, totalW, 0, totalH)
         mmCanvas.Position = UDim2.new(0, offX, 0, offY)
@@ -2505,24 +2501,15 @@ local function updateMinimap()
         for _, t in ipairs(mmActiveTiles) do releaseTile(t) end
         mmActiveTiles = {}
 
-        local now = safeGetServerTime()
-        local isMobile = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled)
-        local CHUNK = isMobile and 4 or 8  -- Smaller chunks on mobile
-        local tileCount = 0
-        local maxTiles = isMobile and 200 or 400  -- Limit tiles on mobile
+        local now   = safeGetServerTime()
+        local CHUNK = 8
 
         for gx = 0, farmW - 1 do
-            if not Gui or not Gui.Parent then break end
-            
             local wx = minX + gx
             for gy = 0, farmH - 1 do
-                tileCount = tileCount + 1
-                if tileCount > maxTiles then break end  -- Stop if too many tiles
-                
                 local wy = startY + gy
                 local tileId, tileData = WorldManager and WorldManager.GetTile(wx, wy, 1)
                 local col
-                
                 if tileId and isSapling(tileId) then
                     local itemData = itemDataCache[tileId]
                     if itemData and tileData then
@@ -2537,7 +2524,6 @@ local function updateMinimap()
                 else
                     col = COL_EMPTY
                 end
-                
                 local t = acquireTile()
                 local sz = math.max(1, cellSz - gap * 2)
                 t.Size             = UDim2.new(0, sz, 0, sz)
@@ -2546,8 +2532,6 @@ local function updateMinimap()
                 t.BackgroundTransparency = (col == COL_EMPTY) and 0.55 or 0
                 table.insert(mmActiveTiles, t)
             end
-            
-            if tileCount > maxTiles then break end
             if gx % CHUNK == (CHUNK - 1) then task.wait() end
         end
 
@@ -2576,12 +2560,8 @@ local _scanReady   = {}
 local _scanGrowing = {}
 
 local function scanSaplings_async(onDone)
-    if _scanRunning then 
-        if onDone then onDone(_scanReady, _scanGrowing) end
-        return 
-    end
+    if _scanRunning then if onDone then onDone(_scanReady, _scanGrowing) end; return end
     _scanRunning = true
-    
     task.spawn(function()
         local minX   = _G.MinX   or 0
         local maxX   = _G.MaxX   or 50
@@ -2589,19 +2569,9 @@ local function scanSaplings_async(onDone)
         local endY   = _G.EndY   or 20
         local ready, growing = {}, {}
         local now = safeGetServerTime()
-        
-        local isMobile = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled)
-        local ROW_CHUNK = isMobile and 5 or 10  -- Smaller chunks on mobile
-        local maxSaplings = isMobile and 100 or 200  -- Limit results on mobile
-        local tileCount = 0
-        
+        local ROW_CHUNK = 10
         for x = minX, maxX do
-            if not Gui or not Gui.Parent then break end
-            if #ready + #growing >= maxSaplings then break end  -- Stop if we have enough
-            
             for y = startY, endY do
-                tileCount = tileCount + 1
-                
                 local tileId, tileData = WorldManager and WorldManager.GetTile(x, y, 1)
                 if tileId and isSapling(tileId) and tileData then
                     local itemData = itemDataCache[tileId]
@@ -2612,35 +2582,22 @@ local function scanSaplings_async(onDone)
                         local growTime  = getGrowTime(rarity)
                         local elapsed   = now - plantTime
                         local progress  = math.clamp(elapsed / growTime, 0, 1)
-                        local info = {
-                            x=x, y=y, 
-                            name=itemData.Name, 
-                            fruits=fruits,
-                            progress=progress, 
-                            timeLeft=math.max(0, growTime-elapsed)
-                        }
-                        
-                        if progress >= 1 then 
-                            table.insert(ready, info)
-                        else 
-                            table.insert(growing, info) 
-                        end
+                        local info = {x=x, y=y, name=itemData.Name, fruits=fruits,
+                                      progress=progress, timeLeft=math.max(0, growTime-elapsed)}
+                        if progress >= 1 then table.insert(ready, info)
+                        else table.insert(growing, info) end
                     end
                 end
             end
-            
-            if (x - minX) % ROW_CHUNK == (ROW_CHUNK - 1) then 
-                task.wait() 
-            end
+            if (x - minX) % ROW_CHUNK == (ROW_CHUNK - 1) then task.wait() end
         end
-        
         _scanReady   = ready
         _scanGrowing = growing
         _scanRunning = false
-        
         if onDone then onDone(ready, growing) end
     end)
 end
+
 local scanCard = mkCard(p3w, 1)
 mkCardHead(scanCard, "WORLD SCANNER")
 local scanBody = mkCardBody(scanCard, 1)
@@ -2735,9 +2692,6 @@ task.spawn(function()
 end)
 
 task.spawn(function()
-    local isMobile = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled)
-    local scanInterval = isMobile and 6 or 4  -- Slower on mobile
-    
     while Gui and Gui.Parent do
         if tabPages[2].Visible then
             scanSaplings_async(function(ready, growing)
@@ -2766,17 +2720,14 @@ task.spawn(function()
                 _G.SaplingsGrowing = growing
             end)
         end
-        task.wait(scanInterval)
+        task.wait(4)
     end
 end)
 
 task.spawn(function()
-    local isMobile = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled)
-    local updateInterval = isMobile and 12 or 8  -- Slower on mobile
-    
     while Gui and Gui.Parent do
         if tabPages[2].Visible then updateMinimap() end
-        task.wait(updateInterval)
+        task.wait(8)
     end
 end)
 
@@ -3854,4 +3805,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YS YS YS YS YS YS")
+print("YSF")
