@@ -1315,8 +1315,7 @@ end
             for _, id in ipairs(toRemove) do itemDataCache[id] = nil end
         end
         
-        -- Force garbage collection
-        if collectgarbage then collectgarbage("collect") end
+                -- Note: collectgarbage is restricted in Roblox, skip GC
     end
 
     -- OPTIMIZED: Bake farm area + drop zones
