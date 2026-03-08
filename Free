@@ -1344,13 +1344,16 @@ local function collectDropsAndGems(instant, centerPos, radius, skipOwnDropCheck)
         return (Vector3.new(pos.X, pos.Y, 0) - centerPos).Magnitude <= radius
     end
 
-    local function isOwnDrop(pos)
+        local function isOwnDrop(pos)
         if skipOwnDropCheck then return false end
         local now = os.clock()
         if _G.BlockDropX and _G.BlockDropY
         and (now - _lastBlockDropTime) < DROP_ZONE_AVOID_DURATION then
-                  if math.abs(pos.X - _G.BlockDropX  * TILE_SIZE) < TILE_SIZE * 3
-      and math.abs(pos.Y - _G.BlockDropY * TILE_SIZE) < TILE_SIZE * 3 then
+            local distX = math.abs(pos.X - _G.BlockDropX * TILE_SIZE)
+            print("[DEBUG] Drop check: distX="..distX.." threshold="..(TILE_SIZE*3).." timeSince="..(now-_lastBlockDropTime))
+            -- Only check X distance (items drop left/right, not up/down)
+            if distX < TILE_SIZE * 3 and math.abs(pos.Y - _G.BlockDropY * TILE_SIZE) < TILE_SIZE then
+                print("[DEBUG] AVOIDING drop at ("..math.round(pos.X/TILE_SIZE)..","..math.round(pos.Y/TILE_SIZE)..")")
                 return true
             end
         end
