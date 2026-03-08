@@ -1298,34 +1298,35 @@ function AStar.find(sx, sy, gx, gy)
         local cur = heapPop()
         local ck  = key(cur.x, cur.y)
 
-        if closed[ck] then continue end  -- skip duplicates WITHOUT counting them
-        closed[ck] = true
+        if not closed[ck] then
+            closed[ck] = true
+            expanded = expanded + 1
 
-        expanded = expanded + 1  -- only count REAL expansions
-        if expanded > CFG.MAX_PATH_NODES then
-            warn("[AStar] Node limit hit — path too long or area too large")
-            return nil
-        end
-
-        if cur.x == gx and cur.y == gy then
-            local path = {{x=gx, y=gy}}
-            local node = ck
-            while cameFrom[node] do
-                local parent = cameFrom[node]
-                table.insert(path, 1, {x=parent.x, y=parent.y})
-                node = key(parent.x, parent.y)
+            if expanded > CFG.MAX_PATH_NODES then
+                warn("[AStar] Node limit hit")
+                return nil
             end
-            return path
-        end
 
-        for _, nb in ipairs(getNeighbours(cur.x, cur.y)) do
-            local nk = key(nb.x, nb.y)
-            if not closed[nk] then
-                local tg = cur.g + nb.cost
-                if not gScore[nk] or tg < gScore[nk] then
-                    gScore[nk]   = tg
-                    cameFrom[nk] = cur
-                    heapPush({x=nb.x, y=nb.y, g=tg, f=tg + h(nb.x, nb.y)})
+            if cur.x == gx and cur.y == gy then
+                local path = {{x=gx, y=gy}}
+                local node = ck
+                while cameFrom[node] do
+                    local parent = cameFrom[node]
+                    table.insert(path, 1, {x=parent.x, y=parent.y})
+                    node = key(parent.x, parent.y)
+                end
+                return path
+            end
+
+            for _, nb in ipairs(getNeighbours(cur.x, cur.y)) do
+                local nk = key(nb.x, nb.y)
+                if not closed[nk] then
+                    local tg = cur.g + nb.cost
+                    if not gScore[nk] or tg < gScore[nk] then
+                        gScore[nk]   = tg
+                        cameFrom[nk] = cur
+                        heapPush({x=nb.x, y=nb.y, g=tg, f=tg + h(nb.x, nb.y)})
+                    end
                 end
             end
         end
