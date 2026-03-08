@@ -3080,10 +3080,13 @@ local function prebakeCollision()
             for gx = 0, farmW - 1, sampleRate do
                 local wx = minX + gx
                 local displayY = 0
-                for gy = 0, farmH - 1, sampleRate do
+                                for gy = 0, farmH - 1, sampleRate do
                     if tilesCreated >= maxTiles then break end
                     local wy = startY + gy
-                    local tileId, tileData = WorldManager and WorldManager.GetTile(wx, wy, 1)
+                    local tileId, tileData
+                    if WorldManager then
+                        tileId, tileData = WorldManager.GetTile(wx, wy, 1)
+                    end
                     local col
                     if tileId and isSapling(tileId) then
                         local itemData = itemDataCache[tileId]
@@ -3150,9 +3153,12 @@ local function prebakeCollision()
             local ready, growing = {}, {}
             local now = safeGetServerTime()
             local ROW_CHUNK = 10
-            for x = minX, maxX do
+                        for x = minX, maxX do
                 for y = startY, endY do
-                    local tileId, tileData = WorldManager and WorldManager.GetTile(x, y, 1)
+                    local tileId, tileData
+                    if WorldManager then
+                        tileId, tileData = WorldManager.GetTile(x, y, 1)
+                    end
                     if tileId and isSapling(tileId) and tileData then
                         local itemData = itemDataCache[tileId]
                         if itemData then
