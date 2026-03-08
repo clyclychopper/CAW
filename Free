@@ -1019,9 +1019,9 @@ local WALK_SPT  = 0.14
 local CLIMB_SPT = 0.20
 local _stopWalk = false
 
--- Mobile-optimized movement delays
-local MOVE_DELAY_PC     = 0.2
-local MOVE_DELAY_MOBILE = 0.3
+-- Mobile-optimized movement delays (CRITICAL: slower for visual stability)
+local MOVE_DELAY_PC     = 0.35
+local MOVE_DELAY_MOBILE = 0.7
 
 local function isSolid(x, y)
     if x < 0 or y < 0 or x > WORLD_W or y > WORLD_H then return true end
@@ -1138,13 +1138,33 @@ end
             return false
         end
 
+                        -- STABLE MOVEMENT: Set position and force sync
+        local targetPos = Vector3.new(tile.x * TILE_SIZE, tile.y * TILE_SIZE, 0)
         movement.Grounded  = true
-        movement.Position  = Vector3.new(tile.x * TILE_SIZE, tile.y * TILE_SIZE, 0)
         movement.VelocityY = 0
         movement.VelocityX = 0
-        -- Use task.wait() instead of Heartbeat for mobile reliability
+        movement.Position  = targetPos
+        
+        -- CRITICAL: Wait for physics sync
         task.wait(moveDelay)
-    end
+        
+        -- Force position again for stability
+        movement.Position = targetPos
+        movement.Grounded = true
+        movement.VelocityX = 0
+        movement.VelocityY = 0
+        
+        -- Mobile: extra wait for visual sync
+        if isMobileExecutor then
+            task.wait(0.15)
+        end
+        end
+    
+    -- Final position verification and stabilization
+    movement.Grounded = true
+    movement.VelocityY = 0
+    movement.VelocityX = 0
+    task.wait(0.1)
     return true
 end
 
@@ -1220,7 +1240,8 @@ local function prebakeCollision()
             end
             count = count + 1
         end
-        if x % 10 == 0 then task.wait() end
+        -- Mobile: yield more frequently during bake
+        if x % (isMobileExecutor and 5 or 10) == 0 then task.wait() end
     end
 
     print(string.format("[DEBUG] Bake DONE: %d tiles, %d solid, %d passable",
@@ -1479,9 +1500,18 @@ end
 local function harvestSapling(x, y)
     local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
     if not remote then return false end
+        -- CRITICAL: Stabilize position before harvesting
+    if movement then
+        movement.Grounded = true
+        movement.VelocityX = 0
+        movement.VelocityY = 0
+        movement.Position = Vector3.new(x * TILE_SIZE, y * TILE_SIZE, 0)
+        task.wait(0.3)
+    end
+    
     local pos   = Vector2.new(x, y)
     local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-    local delay   = isMob and 0.4 or 0.25
+    local delay   = isMob and 0.5 or 0.3
     local maxHits = isMob and 12 or 8
     for hit = 1, maxHits do
         if not PTHT_Running or not _G.AutoPTHT then return false end
@@ -1490,8 +1520,17 @@ local function harvestSapling(x, y)
             markInventoryDirty()
             return true
         end
-        kickWatchdog()
-        RunService.Heartbeat:Wait()
+                kickWatchdog()
+        
+        -- CRITICAL: Maintain stable position during harvest
+        if movement then
+            movement.Grounded = true
+            movement.VelocityX = 0
+            movement.VelocityY = 0
+            movement.Position = Vector3.new(x * TILE_SIZE, y * TILE_SIZE, 0)
+        end
+        
+        task.wait(0.05)
         pcall(function() remote:FireServer(pos) end)
         task.wait(delay)
     end
@@ -1736,8 +1775,14 @@ local function doPlant(ctx)
 
         -- Re-check tile is still empty before walking
         if not WorldManager.GetTile(spot.x, spot.y, 1) then
-            if walkToTile(spot.x, spot.y) then
-                print("[PLANT] Planting at (" .. spot.x .. "," .. spot.y .. ")")
+                                    if walkToTile(spot.x, spot.y) then
+                -- CRITICAL: Full stabilization before planting
+                movement.Grounded = true
+                movement.VelocityX = 0
+                movement.VelocityY = 0
+                movement.Position = Vector3.new(spot.x * TILE_SIZE, spot.y * TILE_SIZE, 0)
+                task.wait(isMobileExecutor and 0.5 or 0.25)
+                
                 plantSapling(spot.x, spot.y, ctx.saplingID)
                 task.wait(ctx.plantSpeed)
                 -- Retry once if placement failed
