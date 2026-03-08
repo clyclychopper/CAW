@@ -1118,13 +1118,16 @@ local function walkToTile(gx, gy)
     local watchdogInterval = isMobileExecutor and 1 or 10
     local moveDelay = isMobileExecutor and MOVE_DELAY_MOBILE or MOVE_DELAY_PC
 
-    for i, tile in ipairs(path) do
+        for i, tile in ipairs(path) do
         if not PTHT_Running then return false end
 
         -- Kick watchdog based on platform
         if i % watchdogInterval == 0 then
             kickWatchdog()
         end
+
+        -- Debug: log each step
+        print("[WALK STEP] "..i.." ("..tile.x..","..tile.y..") solid="..tostring(isSolid(tile.x,tile.y)))
 
         -- Validate tile is passable before moving
         if isSolid(tile.x, tile.y) then
