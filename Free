@@ -2443,8 +2443,14 @@ end
 -- ─────────────────────────────────────────────────────────────
 -- START BOT — main farming loop
 -- ─────────────────────────────────────────────────────────────
-local function StartPTHT()
+local function StartPTHT(mv, wm, im, inv)
     if PTHT_Running then return end
+    
+    -- Inject the passed modules into the inner scope
+    movement = mv
+    WorldManager = wm
+    ItemsManager = im
+    Inventory = inv
 
     print("\n🚀 [PTHT] Starting bot...")
     print("   WorldManager:", WorldManager and "✓" or "✗")
@@ -2812,9 +2818,9 @@ local _, autoPTHTAPI = mkToggle(b1, "Enable Auto Farm", false, 1, function(on)
             if _G.UIElements.statusDot       then _G.UIElements.statusDot.BackgroundColor3 = T.red end
             return
         end
-        _G.AutoPTHT = true
-        Hub.StartPTHT()
-        if _G.UIElements.pthtBadgeText   then _G.UIElements.pthtBadgeText.Text = "RUNNING"; _G.UIElements.pthtBadgeText.TextColor3 = T.green end
+                  _G.AutoPTHT = true
+          Hub.StartPTHT(movement, WorldManager, ItemsManager, Inventory)
+          if _G.UIElements.pthtBadgeText   then _G.UIElements.pthtBadgeText.Text = "RUNNING"; _G.UIElements.pthtBadgeText.TextColor3 = T.green end
         if _G.UIElements.statusDetailLbl then _G.UIElements.statusDetailLbl.Text = "" end
         if _G.UIElements.statusDot       then _G.UIElements.statusDot.BackgroundColor3 = T.green end
     else
