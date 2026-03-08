@@ -1392,7 +1392,7 @@ local function walkToTile(targetX, targetY)
     local startX = math.round(movement.Position.X / TILE_SIZE)
     local startY = math.round(movement.Position.Y / TILE_SIZE)
 
-    print("🚶 [PTHT] Walking ("..tostring(startX)..","..tostring(startY)..") → ("..tostring(targetX)..","..tostring(targetY)..")")
+    print("🚶 [PTHT] Walking ("..tostring(startX)..","..tostring(startY)..") -> ("..tostring(targetX)..","..tostring(targetY)..")")
 
     if startX == targetX and startY == targetY then return true end
 
@@ -1402,7 +1402,7 @@ local function walkToTile(targetX, targetY)
         print("🔍 [PTHT] Computing path...")
         path = astar(startX, startY, targetX, targetY)
         if not path then
-            warn(string.format("[PTHT] ❌ No path found (%d,%d)→(%d,%d), invalidating cache",
+            warn(string.format("[PTHT] No path found (%d,%d)->(%d,%d), invalidating cache",
                 startX, startY, targetX, targetY))
             invalidateTileCache()
             pathCacheInvalidateAll()
@@ -2234,7 +2234,7 @@ local function StartPTHT()
         return
     end
 
-    print("📍 [PTHT] Farm area: ("..tostring(_G.MinX or 0)..","..tostring(_G.StartY or 0)..") → ("..tostring(_G.MaxX or 50)..","..tostring(_G.EndY or 20)..")")
+    print("📍 [PTHT] Farm area: ("..tostring(_G.MinX or 0)..","..tostring(_G.StartY or 0)..") -> ("..tostring(_G.MaxX or 50)..","..tostring(_G.EndY or 20)..")")
     print("🌱 [PTHT] Sapling: "..tostring(_G.SelectedSaplingName or "none"))
     print("🧱 [PTHT] Block: "..tostring(_G.SelectedBlockName or "none"))
 
