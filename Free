@@ -14,8 +14,9 @@
     local LP               = Players.LocalPlayer
     local PGui             = LP:WaitForChild("PlayerGui")
 
-    local isMobileExecutor = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled)
+        local isMobileExecutor = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled)
     local _vimReliable = not isMobileExecutor
+    local MOBILE_PERFORMANCE_MODE = isMobileExecutor  -- Enable aggressive optimizations on mobile
 
     local T = {
         bg         = Color3.fromRGB( 8, 18, 22),
@@ -78,16 +79,18 @@
         end)
     end
 
-    local function addPulseGlow(obj, col)
+        local function addPulseGlow(obj, col)
         local s = stroke(obj, col or T.accent, 1.5)
-        task.spawn(function()
-            while obj and obj.Parent do
-                tween(s, {Thickness = 2.5, Transparency = 0.1}, 0.9, Enum.EasingStyle.Sine)
-                task.wait(0.9)
-                tween(s, {Thickness = 1,   Transparency = 0.6}, 0.9, Enum.EasingStyle.Sine)
-                task.wait(0.9)
-            end
-        end)
+        if not MOBILE_PERFORMANCE_MODE then  -- Disable glow animations on mobile
+            task.spawn(function()
+                while obj and obj.Parent do
+                    tween(s, {Thickness = 2.5, Transparency = 0.1}, 0.9, Enum.EasingStyle.Sine)
+                    task.wait(0.9)
+                    tween(s, {Thickness = 1,   Transparency = 0.6}, 0.9, Enum.EasingStyle.Sine)
+                    task.wait(0.9)
+                end
+            end)
+        end
         return s
     end
 
@@ -185,14 +188,18 @@
     })
     tgGrad.Rotation = 0
     tgGrad.Parent = topGlow
-    task.spawn(function()
-        while topGlow and topGlow.Parent do
-            tween(topGlow, {BackgroundTransparency = 0.5}, 1.8, Enum.EasingStyle.Sine)
-            task.wait(1.8)
-            tween(topGlow, {BackgroundTransparency = 0.85}, 1.8, Enum.EasingStyle.Sine)
-            task.wait(1.8)
-        end
-    end)
+        if not MOBILE_PERFORMANCE_MODE then  -- Disable top glow animation on mobile
+        task.spawn(function()
+            while topGlow and topGlow.Parent do
+                tween(topGlow, {BackgroundTransparency = 0.5}, 1.8, Enum.EasingStyle.Sine)
+                task.wait(1.8)
+                tween(topGlow, {BackgroundTransparency = 0.85}, 1.8, Enum.EasingStyle.Sine)
+                task.wait(1.8)
+            end
+        end)
+    else
+        topGlow.BackgroundTransparency = 0.9  -- Static on mobile
+    end
 
     local titleBar = Instance.new("Frame")
     titleBar.Name             = "TitleBar"
@@ -251,14 +258,16 @@
     logoLabel.TextXAlignment     = Enum.TextXAlignment.Center
     logoLabel.ZIndex             = 7
     logoLabel.Parent             = logoFrame
-    task.spawn(function()
-        while logoFrame and logoFrame.Parent do
-            tween(logoFrame, {BackgroundColor3 = T.purple3}, 1.2, Enum.EasingStyle.Sine)
-            task.wait(1.2)
-            tween(logoFrame, {BackgroundColor3 = T.purple1}, 1.2, Enum.EasingStyle.Sine)
-            task.wait(1.2)
-        end
-    end)
+        if not MOBILE_PERFORMANCE_MODE then  -- Disable logo animation on mobile
+        task.spawn(function()
+            while logoFrame and logoFrame.Parent do
+                tween(logoFrame, {BackgroundColor3 = T.purple3}, 1.2, Enum.EasingStyle.Sine)
+                task.wait(1.2)
+                tween(logoFrame, {BackgroundColor3 = T.purple1}, 1.2, Enum.EasingStyle.Sine)
+                task.wait(1.2)
+            end
+        end)
+    end
 
     local titleLbl = Instance.new("TextLabel")
     titleLbl.Size               = UDim2.new(0.6, 0, 0, 18)
@@ -1009,7 +1018,7 @@
     local _lastDropScan       = 0
     local _cachedDrops        = {}
     local _cachedGems         = {}
-    local DROP_CACHE_INTERVAL = 0.5
+    local DROP_CACHE_INTERVAL = MOBILE_PERFORMANCE_MODE and 1.0 or 0.5  -- Reduce drop scanning on mobile
 
     -- ─────────────────────────────────────────────────────────────
     -- SIMPLE BFS PATHFINDER
@@ -1335,7 +1344,7 @@ local function prebakeCollision()
     local _farmCache        = { emptySpots = 0, readySaplings = {}, growingSaplings = 0 }
     local _farmCacheVersion = 0
     local _farmCacheBuilt   = 0
-    local SCAN_MIN_INTERVAL = 1
+    local SCAN_MIN_INTERVAL = MOBILE_PERFORMANCE_MODE and 2 or 1  -- Reduce farm scanning on mobile
     local _lastBreakCycleTime = 0
     local BREAK_CYCLE_COOLDOWN = 3
 
@@ -1369,7 +1378,7 @@ local function prebakeCollision()
     local _cachedUsedSlots          = 0
     local _inventoryDirty           = true
     local _lastInventoryCheck       = 0
-    local INVENTORY_RECHECK_INTERVAL = 3
+    local INVENTORY_RECHECK_INTERVAL = MOBILE_PERFORMANCE_MODE and 5 or 3  -- Less frequent inventory checks on mobile
 
     local function markInventoryDirty() _inventoryDirty = true end
 
@@ -1960,40 +1969,36 @@ local function prebakeCollision()
         movement.VelocityY = 0
         task.wait(0.2)
         
-                local broken = {}
-        local MAX_CYCLES = 15
+                                local broken = {}
+        local MAX_CYCLES = 12
         local cycleStart = safeGetServerTime()
         local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
         
         if not remote then
-            warn("[BREAK] PlayerFist remote not found")
             _lastBreakCycleTime = safeGetServerTime()
             setWatchdogExtended(false)
             return
         end
         
-        -- SPAM BREAKING: Hit all blocks continuously until all are broken
+                -- ULTRA FAST SPAM BREAKING: Hit all blocks simultaneously with burst mode
         for cycle = 1, MAX_CYCLES do
             if not PTHT_Running or not _G.AutoPTHT then break end
-            if (safeGetServerTime() - cycleStart) > 30 then
-                warn("[YSHub] Break cycle timeout"); break
-            end
+            if (safeGetServerTime() - cycleStart) > 30 then break end
             
             if cycle % 3 == 0 then kickWatchdog() end
             
-            -- Lock position
+            -- Lock position once per cycle
             movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
             movement.Grounded = true
             movement.VelocityX = 0
             movement.VelocityY = 0
             
             local allBroken = true
+            local unbrokenTiles = {}
             
-            -- SPAM: Hit all blocks rapidly in sequence
+            -- First pass: identify unbroken blocks
             for _, tile in ipairs(tilesToBreak) do
-                if not PTHT_Running or not _G.AutoPTHT then break end
                 local k = tile.x * 10000 + tile.y
-                
                 if not broken[k] then
                     local stillThere = WorldManager.GetTile(tile.x, tile.y, 1)
                                     or WorldManager.GetTile(tile.x, tile.y, 2)
@@ -2002,21 +2007,31 @@ local function prebakeCollision()
                         tileCache[k] = false
                     else
                         allBroken = false
-                        -- SPAM HIT (no delay between blocks)
-                        pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
+                        table.insert(unbrokenTiles, tile)
                     end
                 end
             end
             
-            -- Check if all blocks are broken
-            if allBroken then
-
-                break
+            -- If all broken, exit early
+            if allBroken then break end
+            
+            -- BURST MODE: Spam all unbroken blocks rapidly (4-6 hits per block)
+            local hitsPerBlock = UserInputService.TouchEnabled and 4 or 6
+            for hit = 1, hitsPerBlock do
+                if not PTHT_Running or not _G.AutoPTHT then break end
+                
+                -- Hit ALL blocks in rapid succession (no delays between blocks)
+                for _, tile in ipairs(unbrokenTiles) do
+                    pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
+                end
+                
+                -- Tiny delay between burst rounds (not between individual blocks)
+                task.wait(0.02)
             end
             
-                        -- Minimal delay after hitting all blocks once
+            -- Small delay between full cycles
             local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-            task.wait(isMob and 0.1 or 0.05)
+            task.wait(isMob and 0.12 or 0.08)
         end
         
                 _lastBreakCycleTime = safeGetServerTime()
@@ -2738,8 +2753,9 @@ local function prebakeCollision()
             task.wait(0.5); invTimeout = invTimeout + 0.5
         end
         task.wait(1)
-        while Gui and Gui.Parent do
-            refreshSaplingList(); task.wait(5)
+                while Gui and Gui.Parent do
+            refreshSaplingList()
+            task.wait(MOBILE_PERFORMANCE_MODE and 8 or 5)  -- Less frequent on mobile
         end
     end)
 
@@ -3040,15 +3056,15 @@ local function prebakeCollision()
             local mapH  = 220 - PAD * 2 - 22
             if mapW <= 0 or mapH <= 0 then _mmBuilding = false; return end
 
-                        -- Mobile-friendly: larger minimum cell size, less tiles
-            local minCellSize = isMobile and 4 or 2
+                                    -- Mobile-friendly: larger minimum cell size, less tiles
+            local minCellSize = MOBILE_PERFORMANCE_MODE and 6 or (isMobile and 4 or 2)  -- Even larger cells on mobile
                         local cellSz = math.max(minCellSize, math.min(math.floor(mapW/farmW), math.floor(mapH/farmH)))
             local gap = 0
             
-            -- Calculate actual display size based on sampling
+                        -- Calculate actual display size based on sampling
             local sampleRate = 1
-            if farmW * farmH > (isMobile and 400 or 800) then
-                sampleRate = 2
+            if farmW * farmH > (MOBILE_PERFORMANCE_MODE and 200 or (isMobile and 400 or 800)) then
+                sampleRate = MOBILE_PERFORMANCE_MODE and 3 or 2  -- More aggressive sampling on mobile
             end
             local displayW = math.ceil(farmW / sampleRate)
             local displayH = math.ceil(farmH / sampleRate)
@@ -3066,14 +3082,14 @@ local function prebakeCollision()
             mmActiveTiles = {}
 
                                     local now = safeGetServerTime()
-            local CHUNK = isMobile and 4 or 8
-            local maxTiles = isMobile and 400 or 800
+                        local CHUNK = MOBILE_PERFORMANCE_MODE and 2 or (isMobile and 4 or 8)  -- Smaller chunks on mobile
+            local maxTiles = MOBILE_PERFORMANCE_MODE and 200 or (isMobile and 400 or 800)  -- Fewer tiles on mobile
             local tilesCreated = 0
 
-                        -- Use same sample rate as calculated above
+                                    -- Use same sample rate as calculated above
             sampleRate = 1
             if farmW * farmH > maxTiles then
-                sampleRate = 2
+                sampleRate = MOBILE_PERFORMANCE_MODE and 3 or 2  -- More aggressive sampling on mobile
             end
             
                         local displayX = 0
@@ -3082,10 +3098,13 @@ local function prebakeCollision()
                 local displayY = 0
                                 for gy = 0, farmH - 1, sampleRate do
                     if tilesCreated >= maxTiles then break end
-                    local wy = startY + gy
+                                        local wy = startY + gy
                     local tileId, tileData
                     if WorldManager then
                         tileId, tileData = WorldManager.GetTile(wx, wy, 1)
+                        if not tileId then
+                            tileId, tileData = WorldManager.GetTile(wx, wy, 2)
+                        end
                     end
                     local col
                     if tileId and isSapling(tileId) then
@@ -3270,10 +3289,10 @@ local function prebakeCollision()
         dropsListLbl.Text = #dropsList > 0 and table.concat(dropsList, "\n") or "No drops in world"
     end
 
-    task.spawn(function()
+        task.spawn(function()
         while Gui and Gui.Parent do
             if tabPages[2].Visible then updateDropsDisplay() end
-            task.wait(2)
+            task.wait(MOBILE_PERFORMANCE_MODE and 4 or 2)  -- Less frequent on mobile
         end
     end)
 
@@ -3306,7 +3325,7 @@ local function prebakeCollision()
                     _G.SaplingsGrowing = growing
                 end)
             end
-            task.wait(4)
+                        task.wait(MOBILE_PERFORMANCE_MODE and 6 or 4)  -- Less frequent on mobile
         end
     end)
 
@@ -3321,7 +3340,7 @@ local function prebakeCollision()
                     updateMinimap(false)
                 end
             end
-            task.wait(isMobile and 10 or 8)
+                        task.wait(MOBILE_PERFORMANCE_MODE and 15 or (isMobile and 10 or 8))  -- Much less frequent minimap updates on mobile
         end
     end)
 
@@ -3877,9 +3896,10 @@ local function prebakeCollision()
 
     updateInventoryDisplay()
     task.spawn(function()
-        while Gui and Gui.Parent do
+                while Gui and Gui.Parent do
             if tabPages[3].Visible then
-                updateInventoryDisplay(); task.wait(5)
+                updateInventoryDisplay()
+                task.wait(MOBILE_PERFORMANCE_MODE and 8 or 5)  -- Less frequent on mobile
             else
                 if Inventory and Inventory.MaxSlots then
                     local u=0
@@ -4016,24 +4036,28 @@ local function prebakeCollision()
     clickText.TextColor3=Color3.fromRGB(180,140,220); clickText.TextSize=20
     clickText.Font=Enum.Font.GothamBold; clickText.TextScaled=true; clickText.ZIndex=2; clickText.Parent=overlayFrame
 
-    task.spawn(function()
-        while clickText and clickText.Parent do
-            if renderOverlay.Enabled then
-                tween(clickText,{TextTransparency=0.5},1,Enum.EasingStyle.Sine); task.wait(1)
-                tween(clickText,{TextTransparency=0},1,Enum.EasingStyle.Sine); task.wait(1)
-            else task.wait(2) end
-        end
-    end)
-    task.spawn(function()
-        while renderOverlay and renderOverlay.Parent do
-            if renderOverlay.Enabled then
-                tween(brandText,{TextTransparency=0.1},2,Enum.EasingStyle.Sine)
-                tween(brandStroke,{Thickness=6},2,Enum.EasingStyle.Sine); task.wait(2)
-                tween(brandText,{TextTransparency=0},2,Enum.EasingStyle.Sine)
-                tween(brandStroke,{Thickness=4},2,Enum.EasingStyle.Sine); task.wait(2)
-            else task.wait(1) end
-        end
-    end)
+        if not MOBILE_PERFORMANCE_MODE then  -- Disable text animation on mobile
+        task.spawn(function()
+            while clickText and clickText.Parent do
+                if renderOverlay.Enabled then
+                    tween(clickText,{TextTransparency=0.5},1,Enum.EasingStyle.Sine); task.wait(1)
+                    tween(clickText,{TextTransparency=0},1,Enum.EasingStyle.Sine); task.wait(1)
+                else task.wait(2) end
+            end
+        end)
+    end
+        if not MOBILE_PERFORMANCE_MODE then  -- Disable brand animation on mobile
+        task.spawn(function()
+            while renderOverlay and renderOverlay.Parent do
+                if renderOverlay.Enabled then
+                    tween(brandText,{TextTransparency=0.1},2,Enum.EasingStyle.Sine)
+                    tween(brandStroke,{Thickness=6},2,Enum.EasingStyle.Sine); task.wait(2)
+                    tween(brandText,{TextTransparency=0},2,Enum.EasingStyle.Sine)
+                    tween(brandStroke,{Thickness=4},2,Enum.EasingStyle.Sine); task.wait(2)
+                else task.wait(1) end
+            end
+        end)
+    end
 
     local _, render3dAPI = mkToggle(ppBody, "Disable 3D Rendering", _G.Disable3DRendering or false, 5, function(on)
         _G.Disable3DRendering = on
@@ -4362,8 +4386,9 @@ local function prebakeCollision()
     mkDivider(b7b,2); mkActionBtn(b7b,"Refresh List",3,updateConfigList); mkDivider(b7b,4)
 
     task.spawn(function()
-        while Gui and Gui.Parent do
-            if tabPages[5].Visible then updateConfigList() end; task.wait(3)
+                while Gui and Gui.Parent do
+            if tabPages[5].Visible then updateConfigList() end
+            task.wait(MOBILE_PERFORMANCE_MODE and 5 or 3)  -- Less frequent on mobile
         end
     end)
 
