@@ -3079,7 +3079,7 @@ local function prebakeCollision()
                 sampleRate = 2
             end
             
-            local displayX = 0
+                        local displayX = 0
             for gx = 0, farmW - 1, sampleRate do
                 local wx = minX + gx
                 local displayY = 0
@@ -3105,9 +3105,11 @@ local function prebakeCollision()
                     local t = acquireTile()
                     local sz = math.max(1, cellSz)
                     t.Size             = UDim2.new(0, sz, 0, sz)
-                    t.Position         = UDim2.new(0, displayX * cellSz, 0, (math.floor(farmH/sampleRate) - 1 - displayY) * cellSz)
+                    t.Position         = UDim2.new(0, displayX * cellSz, 0, (displayH - 1 - displayY) * cellSz)
                     t.BackgroundColor3 = col
                     t.BackgroundTransparency = (col == COL_EMPTY) and 0.5 or 0
+                    t.BorderSizePixel  = 0
+                    t.Parent           = mmCanvas
                     table.insert(mmActiveTiles, t)
                     tilesCreated = tilesCreated + 1
                     displayY = displayY + 1
