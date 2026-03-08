@@ -1019,9 +1019,9 @@ local WALK_SPT  = 0.14
 local CLIMB_SPT = 0.20
 local _stopWalk = false
 
--- Mobile-optimized movement delays (CRITICAL: slower for visual stability)
-local MOVE_DELAY_PC     = 0.35
-local MOVE_DELAY_MOBILE = 0.7
+-- Mobile-optimized movement delays (optimized for direct teleport)
+local MOVE_DELAY_PC     = 0.15
+local MOVE_DELAY_MOBILE = 0.3
 
 local function isSolid(x, y)
     if x < 0 or y < 0 or x > WORLD_W or y > WORLD_H then return true end
@@ -1102,69 +1102,31 @@ end
 
 
 
+-- OPTIMIZED: Direct teleport for farm grid (no pathfinding lag)
 local function walkToTile(gx, gy)
     if not movement then return false end
+    if not PTHT_Running then return false end
+    
     local sx = math.round(movement.Position.X / TILE_SIZE)
     local sy = math.round(movement.Position.Y / TILE_SIZE)
     if sx == gx and sy == gy then return true end
-
-    local path = findPath(sx, sy, gx, gy)
-    if not path or #path == 0 then
-        warn("[Walk] No path from ("..sx..","..sy..") to ("..gx..","..gy..")")
-        return false
-    end
-
-    -- Mobile: kick watchdog every tile | PC: every 10 tiles
-    local watchdogInterval = isMobileExecutor and 1 or 10
-    local moveDelay = isMobileExecutor and MOVE_DELAY_MOBILE or MOVE_DELAY_PC
-
-        for i, tile in ipairs(path) do
-        if not PTHT_Running then return false end
-
-        -- Kick watchdog based on platform
-        if i % watchdogInterval == 0 then
-            kickWatchdog()
-        end
-
-    local prevTile = i > 1 and path[i-1] or nil
-if prevTile then
-    print("[WALK STEP] "..i.." ("..tile.x..","..tile.y..") | prev=("..prevTile.x..","..prevTile.y..") | dy="..(tile.y - prevTile.y).." | solid="..tostring(isSolid(tile.x,tile.y)))
-end
-
-        -- Validate tile is passable before moving
-        if isSolid(tile.x, tile.y) then
-            warn("[Walk] Tile ("..tile.x..","..tile.y..") became solid mid-path! Stopping.")
-            invalidateTileCache()
-            return false
-        end
-
-                        -- STABLE MOVEMENT: Set position and force sync
-        local targetPos = Vector3.new(tile.x * TILE_SIZE, tile.y * TILE_SIZE, 0)
-        movement.Grounded  = true
-        movement.VelocityY = 0
-        movement.VelocityX = 0
-        movement.Position  = targetPos
-        
-        -- CRITICAL: Wait for physics sync
-        task.wait(moveDelay)
-        
-        -- Force position again for stability
-        movement.Position = targetPos
-        movement.Grounded = true
-        movement.VelocityX = 0
-        movement.VelocityY = 0
-        
-        -- Mobile: extra wait for visual sync
-        if isMobileExecutor then
-            task.wait(0.15)
-        end
-        end
     
-    -- Final position verification and stabilization
-    movement.Grounded = true
+    kickWatchdog()
+    
+    -- Direct teleport to target (farms are open grids)
+    local targetPos = Vector3.new(gx * TILE_SIZE, gy * TILE_SIZE, 0)
+    movement.Grounded  = true
     movement.VelocityY = 0
     movement.VelocityX = 0
-    task.wait(0.1)
+    movement.Position  = targetPos
+    
+    -- Single wait for stability
+    task.wait(isMobileExecutor and 0.3 or 0.15)
+    
+    -- Final position lock
+    movement.Position = targetPos
+    movement.Grounded = true
+    
     return true
 end
 
@@ -1214,17 +1176,24 @@ invalidateTileCache = function()
     tileCacheVersion = tileCacheVersion + 1
 end
 
+-- OPTIMIZED: Only bake farm area (not entire world)
 local function prebakeCollision()
     if not WorldManager then
         warn("[DEBUG] WorldManager is NIL during bake")
         return false
     end
-    print("[DEBUG] Starting collision bake...")
+    print("[DEBUG] Starting optimized collision bake...")
     invalidateTileCache()
 
+    -- Only bake the farm area + small buffer
+    local minX = math.max(0, (_G.MinX or 0) - 5)
+    local maxX = math.min(WORLD_W, (_G.MaxX or 50) + 5)
+    local minY = math.max(0, (_G.StartY or 0) - 5)
+    local maxY = math.min(WORLD_H, (_G.EndY or 20) + 5)
+    
     local count, blocked = 0, 0
-    for x = 0, WORLD_W do
-        for y = 0, WORLD_H do
+    for x = minX, maxX do
+        for y = minY, maxY do
             local tile1 = WorldManager.GetTile(x, y, 1)
             local tile2 = WorldManager.GetTile(x, y, 2)
 
@@ -1240,8 +1209,7 @@ local function prebakeCollision()
             end
             count = count + 1
         end
-        -- Mobile: yield more frequently during bake
-        if x % (isMobileExecutor and 5 or 10) == 0 then task.wait() end
+        if x % 10 == 0 then task.wait() end
     end
 
     print(string.format("[DEBUG] Bake DONE: %d tiles, %d solid, %d passable",
@@ -1500,19 +1468,20 @@ end
 local function harvestSapling(x, y)
     local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
     if not remote then return false end
-        -- CRITICAL: Stabilize position before harvesting
+            -- Stabilize position once before harvesting
     if movement then
         movement.Grounded = true
         movement.VelocityX = 0
         movement.VelocityY = 0
         movement.Position = Vector3.new(x * TILE_SIZE, y * TILE_SIZE, 0)
-        task.wait(0.3)
+        task.wait(0.2)
     end
     
     local pos   = Vector2.new(x, y)
     local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-    local delay   = isMob and 0.5 or 0.3
-    local maxHits = isMob and 12 or 8
+    local delay   = isMob and 0.35 or 0.2
+    local maxHits = isMob and 10 or 8
+    
     for hit = 1, maxHits do
         if not PTHT_Running or not _G.AutoPTHT then return false end
         if not (WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)) then
@@ -1520,17 +1489,9 @@ local function harvestSapling(x, y)
             markInventoryDirty()
             return true
         end
-                kickWatchdog()
         
-        -- CRITICAL: Maintain stable position during harvest
-        if movement then
-            movement.Grounded = true
-            movement.VelocityX = 0
-            movement.VelocityY = 0
-            movement.Position = Vector3.new(x * TILE_SIZE, y * TILE_SIZE, 0)
-        end
+        if hit % 3 == 0 then kickWatchdog() end
         
-        task.wait(0.05)
         pcall(function() remote:FireServer(pos) end)
         task.wait(delay)
     end
