@@ -1769,8 +1769,12 @@ local function startWatchdog()
                 StopPTHT()
             end
         end
-    end)
+        end)
 end
+
+-- Wire up modules and shared cache
+injectModules(movement, WorldManager)
+setTileCache(tileCache)
 
 -- FARM CACHE
 -- ─────────────────────────────────────────────────────────────
@@ -4531,4 +4535,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("Ycc")
+print("YsS")
