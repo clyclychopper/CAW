@@ -986,6 +986,13 @@ local TILE_SIZE = Hub.TILE_SIZE
 local WORLD_W   = Hub.WORLD_W
 local WORLD_H   = Hub.WORLD_H
 
+-- Forward declarations
+local kickWatchdog
+local invalidateTileCache
+local StopPTHT
+local invalidateFarmCache
+local safeGetServerTime
+
 local PTHT_Running = false
 local _dropLock    = false
 
@@ -1019,19 +1026,30 @@ end
 
 local function findPath(sx, sy, gx, gy)
     print("[DEBUG] findPath called: ("..sx..","..sy..") -> ("..gx..","..gy..")")
-    
-    -- Check what's at the goal
-    local goalTileId = WorldManager and WorldManager.GetTile(gx, gy, 1)
-    print("[DEBUG] Goal tile ID: "..tostring(goalTileId))
-    print("[DEBUG] Goal is sapling: "..tostring(goalTileId and isSapling(goalTileId)))
-    
-    print("[DEBUG] Start solid: "..tostring(isSolid(sx,sy)).." Goal solid: "..tostring(isSolid(gx,gy)))
-    print("[DEBUG] Start cache: "..tostring(tileCache[sx*10000+sy]).." Goal cache: "..tostring(tileCache[gx*10000+gy]))
-    
     if sx == gx and sy == gy then return {} end
-    if isSolid(sx, sy) then print("[DEBUG] START is solid!"); return nil end
-    if isSolid(gx, gy) then print("[DEBUG] GOAL is solid!"); return nil end
-    
+    if isSolid(sx, sy) then
+        warn("[findPath] Start ("..sx..","..sy..") is solid — cannot pathfind")
+        return nil
+    end
+    -- For the GOAL: saplings are valid destinations (they're in the tileCache as passable)
+    -- Only hard-block if truly solid AND not a sapling
+    if isSolid(gx, gy) then
+        -- Try adjacent tiles as fallback goal
+        local fallbacks = {{gx+1,gy},{gx-1,gy},{gx,gy+1},{gx,gy-1}}
+        local found = false
+        for _, fb in ipairs(fallbacks) do
+            if not isSolid(fb[1], fb[2]) then
+                gx, gy = fb[1], fb[2]
+                found = true
+                break
+            end
+        end
+        if not found then
+            warn("[findPath] Goal ("..gx..","..gy..") is solid and no fallback found")
+            return nil
+        end
+    end
+
     local visited = {}
     local parent  = {}
     local queue   = {}
@@ -1041,10 +1059,12 @@ local function findPath(sx, sy, gx, gy)
     queue[1] = {x=sx, y=sy}
     local DIRS = {{1,0},{-1,0},{0,1},{0,-1}}
     local explored = 0
+
     while head <= #queue do
         local cur = queue[head]
         head = head + 1
         explored = explored + 1
+
         if cur.x == gx and cur.y == gy then
             local path = {}
             local node = {x=gx, y=gy}
@@ -1055,6 +1075,7 @@ local function findPath(sx, sy, gx, gy)
             print("[DEBUG] Path found! Length: "..#path.." Explored: "..explored)
             return path
         end
+
         for _, d in ipairs(DIRS) do
             local nx, ny = cur.x + d[1], cur.y + d[2]
             local nk = key(nx, ny)
@@ -1064,9 +1085,14 @@ local function findPath(sx, sy, gx, gy)
                 table.insert(queue, {x=nx, y=ny})
             end
         end
-        if explored > 10000 then print("[DEBUG] Explored too many nodes, stopping"); break end
+
+        if explored > Hub.ASTAR_MAX_NODES then
+            warn("[findPath] Node limit reached ("..explored.."), no path found")
+            return nil
+        end
     end
-    print("[DEBUG] NO PATH FOUND! Explored: "..explored.." Queue size: "..#queue)
+
+    warn("[DEBUG] NO PATH FOUND! Explored: "..explored)
     return nil
 end
 
@@ -1113,32 +1139,34 @@ local function walkToTile(gx, gy)
     local sx = math.round(movement.Position.X / TILE_SIZE)
     local sy = math.round(movement.Position.Y / TILE_SIZE)
     if sx == gx and sy == gy then return true end
-    
+
     local path = findPath(sx, sy, gx, gy)
     if not path or #path == 0 then
+        warn("[Walk] No path from ("..sx..","..sy..") to ("..gx..","..gy..")")
         return false
     end
-    
-        -- Walk path with validation
+
     for i, tile in ipairs(path) do
         if not PTHT_Running then return false end
-        
-        -- Kick watchdog every 10 tiles to prevent timeout on long paths
-        if i % 10 == 0 then kickWatchdog() end
-        
-        -- CRITICAL: Validate tile is actually passable before moving
+
+        -- Kick watchdog every 10 tiles
+        if i % 10 == 0 then
+            kickWatchdog()
+        end
+
+        -- Validate tile is passable before moving
         if isSolid(tile.x, tile.y) then
-            warn("[Walk] Tile ("..tile.x..","..tile.y..") is solid! Stopping.")
+            warn("[Walk] Tile ("..tile.x..","..tile.y..") became solid mid-path! Stopping.")
             invalidateTileCache()
             return false
         end
-        
-        RunService.Heartbeat:Wait()
+
         movement.Position  = Vector3.new(tile.x * TILE_SIZE, tile.y * TILE_SIZE, 0)
         movement.VelocityY = 0
         movement.VelocityX = 0
         movement.Grounded  = true
-        task.wait(0.08)
+        -- Small yield to prevent frame-skipping and allow server to process
+        RunService.Heartbeat:Wait()
     end
     return true
 end
@@ -1146,7 +1174,9 @@ end
 local function stopWalking()
     _stopWalk = true
     if movement then
-        movement.VelocityX = 0; movement.VelocityY = 0; movement.Grounded = true
+        movement.VelocityX = 0
+        movement.VelocityY = 0
+        movement.Grounded  = true
     end
 end
 
@@ -1156,7 +1186,8 @@ end
 local _watchdogLastKick = 0
 local _watchdogExtended = false
 
-local function kickWatchdog()
+-- Assign the forward-declared function body
+kickWatchdog = function()
     _watchdogLastKick = os.clock()
 end
 
@@ -1171,8 +1202,8 @@ local function startWatchdog()
             task.wait(5)
             local timeout = _watchdogExtended and 50 or 15
             if PTHT_Running and (os.clock() - _watchdogLastKick) > timeout then
-                warn("[Watchdog] Bot stuck - stopping")
-                StopPTHT()
+                warn("[Watchdog] Bot stuck — stopping")
+                StopPTHT()  -- safe: StopPTHT is forward-declared
             end
         end
     end)
@@ -1181,35 +1212,50 @@ end
 -- ─────────────────────────────────────────────────────────────
 -- COLLISION BAKING
 -- ─────────────────────────────────────────────────────────────
-local function prebakeCollision()
-    if not WorldManager then print("[DEBUG] WorldManager is NIL"); return false end
-    print("[DEBUG] Starting collision bake...")
+invalidateTileCache = function()
     for k in pairs(tileCache) do tileCache[k] = nil end
     tileCacheVersion = tileCacheVersion + 1
+end
+
+local function prebakeCollision()
+    if not WorldManager then
+        warn("[DEBUG] WorldManager is NIL during bake")
+        return false
+    end
+    print("[DEBUG] Starting collision bake...")
+    invalidateTileCache()
+
     local count, blocked = 0, 0
     for x = 0, WORLD_W do
         for y = 0, WORLD_H do
-            -- Check BOTH layers for blocks
             local tile1 = WorldManager.GetTile(x, y, 1)
             local tile2 = WorldManager.GetTile(x, y, 2)
-            
-            -- Tile is solid if there's ANY non-sapling block on either layer
+
+            -- Tile is solid only if a non-sapling block exists on either layer
             local solid = false
             if tile1 and not isSapling(tile1) then solid = true end
             if tile2 and not isSapling(tile2) then solid = true end
-            
-            tileCache[x * 10000 + y] = solid
-            if solid then blocked = blocked + 1 end
+
+            -- Only store true to save memory (nil == passable)
+            if solid then
+                tileCache[x * 10000 + y] = true
+                blocked = blocked + 1
+            end
             count = count + 1
         end
         if x % 10 == 0 then task.wait() end
     end
-        print(string.format("[DEBUG] Bake DONE: %d tiles, %d solid, %d passable", count, blocked, count-blocked))
-    print("[DEBUG] Sample tiles: (0,0)="..tostring(tileCache[0])..", (10,10)="..tostring(tileCache[100010])..", (20,20)="..tostring(tileCache[200020]))
-    print("[DEBUG] Cache has data: "..tostring(next(tileCache) ~= nil))
-    print("[DEBUG] Tile (82,39): "..tostring(tileCache[820390]))
-    print("[DEBUG] Tile (82,32): "..tostring(tileCache[820320]))
-        return count > 0
+
+    print(string.format("[DEBUG] Bake DONE: %d tiles, %d solid, %d passable",
+        count, blocked, count - blocked))
+    print("[DEBUG] Sample: (0,0)=" .. tostring(tileCache[0])
+        .. " (10,10)=" .. tostring(tileCache[100010])
+        .. " (20,20)=" .. tostring(tileCache[200020]))
+    print("[DEBUG] Cache has data: " .. tostring(next(tileCache) ~= nil))
+    -- FIXED: correct key is 82*10000+39 = 820039, not 820390
+    print("[DEBUG] Tile (82,39): " .. tostring(tileCache[82 * 10000 + 39]))
+    print("[DEBUG] Tile (82,32): " .. tostring(tileCache[82 * 10000 + 32]))
+    return count > 0
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -1222,7 +1268,7 @@ local SCAN_MIN_INTERVAL = 1
 local _lastBreakCycleTime = 0
 local BREAK_CYCLE_COOLDOWN = 3
 
-local invalidateFarmCache = function()
+invalidateFarmCache = function()
     _farmCacheVersion = _farmCacheVersion + 1
 end
 
@@ -1230,17 +1276,12 @@ local function isFarmCacheValid()
     return _farmCacheBuilt == _farmCacheVersion
 end
 
-local function invalidateTileCache()
-    for k in pairs(tileCache) do tileCache[k] = nil end
-    tileCacheVersion = tileCacheVersion + 1
-end
-
 -- ─────────────────────────────────────────────────────────────
 -- SERVER TIME
 -- ─────────────────────────────────────────────────────────────
 local _serverTimeOffset = nil
 
-local function safeGetServerTime()
+safeGetServerTime = function()
     local ok, t = pcall(function() return workspace:GetServerTimeNow() end)
     if ok and t and t > 100000 then
         _serverTimeOffset = t - os.clock()
@@ -1642,49 +1683,100 @@ end
 -- DO PLANT
 -- ─────────────────────────────────────────────────────────────
 local function doPlant(ctx)
-    print("[PLANT] Starting plant cycle")
-    if not WorldManager or not Inventory then print("[PLANT] Missing modules"); return end
+    -- CRITICAL FIX: Validate all area values are numbers
+    local minX   = tonumber(ctx.minX)   or 0
+    local maxX   = tonumber(ctx.maxX)   or 0
+    local startY = tonumber(ctx.startY) or 0
+    local endY   = tonumber(ctx.endY)   or 0
+
+    if minX >= maxX then
+        warn("[PLANT] Invalid area: minX("..minX..") >= maxX("..maxX..")")
+        return
+    end
+    if startY > endY then
+        warn("[PLANT] Invalid area: startY("..startY..") > endY("..endY..")")
+        return
+    end
+
+    print("[PLANT] Starting plant cycle in area ("..minX..","..startY..")->("..maxX..","..endY..")")
+
+    if not WorldManager or not Inventory then
+        warn("[PLANT] Missing modules")
+        return
+    end
+
     local emptyList = {}
-    for x = ctx.minX, ctx.maxX do
-        for y = ctx.startY, ctx.endY, 2 do
+    for x = minX, maxX do
+        for y = startY, endY, 2 do
             if not WorldManager.GetTile(x, y, 1) then
                 table.insert(emptyList, { x = x, y = y })
             end
         end
     end
-        print("[PLANT] Found "..#emptyList.." empty spots")
-    -- Pre-calculate sort indices for zigzag pattern
+
+    print("[PLANT] Found " .. #emptyList .. " empty spots")
+
+    if #emptyList == 0 then return end
+
+    -- FIXED: Calculate sortKey with validated numbers — no nil risk
+    local farmWidth = maxX - minX  -- used for row reversal
+
     for _, spot in ipairs(emptyList) do
-        local row = math.floor((spot.y - ctx.startY) / 2)
-        local col = spot.x - ctx.minX
-        -- For even rows, use x as-is; for odd rows, reverse x
-        local sortX = (row % 2 == 0) and col or (ctx.maxX - ctx.minX - col)
+        -- Both spot.y and startY are validated numbers now
+        local row = math.floor((spot.y - startY) / 2)
+        local col = spot.x - minX
+        -- Zigzag: even rows go left-to-right, odd rows go right-to-left
+        local sortX = (row % 2 == 0) and col or (farmWidth - col)
+        -- FIXED: ensure sortKey is always a valid number
         spot.sortKey = row * 10000 + sortX
     end
+
+    -- FIXED: Comparator now guaranteed to work — both values are numbers
     table.sort(emptyList, function(a, b)
-        return a.sortKey < b.sortKey
+        -- Extra safety: if either sortKey is somehow nil, fallback to stable order
+        local ak = a.sortKey or 0
+        local bk = b.sortKey or 0
+        return ak < bk
     end)
-        for i, spot in ipairs(emptyList) do
-        if not PTHT_Running or not _G.AutoPTHT then print("[PLANT] Stopped"); return end
+
+    for i, spot in ipairs(emptyList) do
+        if not PTHT_Running or not _G.AutoPTHT then
+            print("[PLANT] Stopped by user")
+            return
+        end
+
         local seeds = countInInventory(ctx.saplingID)
-        if seeds == 0 then print("[PLANT] Out of saplings"); break end
-        print("[PLANT] "..i.."/"..#emptyList.." - Walking to ("..spot.x..","..spot.y..") - Seeds: "..seeds)
+        if seeds == 0 then
+            print("[PLANT] Out of saplings at step " .. i)
+            break
+        end
+
+        print("[PLANT] " .. i .. "/" .. #emptyList
+            .. " - Walking to (" .. spot.x .. "," .. spot.y .. ")"
+            .. " - Seeds: " .. seeds)
+
         kickWatchdog()
+
+        -- Re-check tile is still empty before walking
         if not WorldManager.GetTile(spot.x, spot.y, 1) then
             if walkToTile(spot.x, spot.y) then
-                print("[PLANT] Planting at ("..spot.x..","..spot.y..")")
+                print("[PLANT] Planting at (" .. spot.x .. "," .. spot.y .. ")")
                 plantSapling(spot.x, spot.y, ctx.saplingID)
                 task.wait(ctx.plantSpeed)
+                -- Retry once if placement failed
                 if not WorldManager.GetTile(spot.x, spot.y, 1) then
-                    print("[PLANT] Retry plant at ("..spot.x..","..spot.y..")")
+                    print("[PLANT] Retry planting at (" .. spot.x .. "," .. spot.y .. ")")
                     plantSapling(spot.x, spot.y, ctx.saplingID)
-                    task.wait(0.1)
+                    task.wait(0.15)
                 end
             else
-                print("[PLANT] Walk failed to ("..spot.x..","..spot.y..")")
+                warn("[PLANT] Walk failed to (" .. spot.x .. "," .. spot.y .. "), skipping")
             end
+        else
+            print("[PLANT] Spot (" .. spot.x .. "," .. spot.y .. ") already filled, skipping")
         end
     end
+
     print("[PLANT] Cycle complete")
     invalidateFarmCache()
 end
@@ -1833,6 +1925,7 @@ StopPTHT = function()
     _G.AutoPTHT   = false
     _G.IsDropping = false
     _stopWalk     = true
+
     local managers = game.ReplicatedStorage:FindFirstChild("Managers")
     if managers then
         local uiManager = managers:FindFirstChild("UIManager")
@@ -1841,6 +1934,7 @@ StopPTHT = function()
             if ev then pcall(function() ev:FireServer({ ButtonAction = "cls" }) end) end
         end
     end
+
     task.wait(0.2)
     if movement then
         movement.Grounded  = true
@@ -1870,6 +1964,8 @@ local function StartPTHT(mv, wm, im, inv)
         return
     end
 
+    -- CRITICAL FIX: Reset _stopWalk so walking works after a restart
+    _stopWalk    = false
     PTHT_Running = true
     invalidateFarmCache()
 
@@ -1879,36 +1975,46 @@ local function StartPTHT(mv, wm, im, inv)
         for attempt = 1, 3 do
             bakeOk = prebakeCollision()
             if bakeOk then print("✅ [PTHT] Collision baked"); break end
-            warn("[PTHT] Bake attempt "..attempt.." failed, retry in 1s")
+            warn("[PTHT] Bake attempt " .. attempt .. " failed, retry in 1s")
             task.wait(1)
         end
-        if not bakeOk then warn("[PTHT] ❌ Bake failed — pathfinding may be wrong") end
+        if not bakeOk then
+            warn("[PTHT] ❌ Bake failed — pathfinding may be incorrect")
+        end
 
         kickWatchdog()
         startWatchdog()
 
         local _lastScanTime = 0
 
-                while PTHT_Running and _G.AutoPTHT do
+        while PTHT_Running and _G.AutoPTHT do
             kickWatchdog()
             print("\n[PTHT] ═══════════════════════════════════════")
 
             local saplingID = _G.SelectedSaplingID
             local blockID   = _G.SelectedBlockID
-            if not saplingID or not blockID then
+            if not saplingID or saplingID == "" or not blockID or blockID == "" then
                 warn("[PTHT] No sapling/block selected — stopping")
-                StopPTHT(); return
+                StopPTHT()
+                return
             end
-            print("[PTHT] Sapling: "..saplingID.." | Block: "..blockID)
 
-            local minX   = _G.MinX   or 0
-            local maxX   = _G.MaxX   or 50
-            local startY = _G.StartY or 0
-            local endY   = _G.EndY   or 20
+            -- CRITICAL FIX: Always use tonumber() with safe defaults
+            local minX   = tonumber(_G.MinX)   or 0
+            local maxX   = tonumber(_G.MaxX)   or 0
+            local startY = tonumber(_G.StartY) or 0
+            local endY   = tonumber(_G.EndY)   or 0
 
-            local plantSpeed   = (101 - (_G.PlantSpeed   or 50)) / 100
-            local harvestSpeed = (101 - (_G.HarvestSpeed or 50)) / 100
-            local breakSpeed   = (101 - (_G.BreakSpeed   or 50)) / 200
+            -- Validate area before proceeding
+            if minX >= maxX or startY > endY then
+                warn("[PTHT] Invalid farm area — check Min/Max X and Start/End Y")
+                task.wait(2)
+                continue
+            end
+
+            local plantSpeed   = (101 - (tonumber(_G.PlantSpeed)   or 50)) / 100
+            local harvestSpeed = (101 - (tonumber(_G.HarvestSpeed) or 50)) / 100
+            local breakSpeed   = (101 - (tonumber(_G.BreakSpeed)   or 50)) / 200
 
             local ctx = {
                 minX=minX, maxX=maxX, startY=startY, endY=endY,
@@ -1916,11 +2022,12 @@ local function StartPTHT(mv, wm, im, inv)
                 plantSpeed=plantSpeed, harvestSpeed=harvestSpeed, breakSpeed=breakSpeed,
             }
 
-                        local seeds        = countInInventory(saplingID)
-            local blocks       = countInInventory(blockID)
-            local farmWidth    = maxX - minX + 1
-            local farmRows     = math.floor((endY - startY) / 2) + 1
+            local seeds         = countInInventory(saplingID)
+            local blocks        = countInInventory(blockID)
+            local farmWidth     = maxX - minX + 1
+            local farmRows      = math.floor((endY - startY) / 2) + 1
             local totalCapacity = farmWidth * farmRows
+
             print("[PTHT] Seeds: "..seeds.." | Blocks: "..blocks.." | Capacity: "..totalCapacity)
 
             local now = safeGetServerTime()
@@ -1958,16 +2065,18 @@ local function StartPTHT(mv, wm, im, inv)
                     _farmCacheBuilt = _farmCacheVersion
                     _lastScanTime   = safeGetServerTime()
                 else
-                    task.wait(0.1); continue
+                    task.wait(0.1)
+                    continue
                 end
             end
 
-                        local emptySpots      = _farmCache.emptySpots
+            local emptySpots      = _farmCache.emptySpots
             local readySaplings   = _farmCache.readySaplings
             local growingSaplings = _farmCache.growingSaplings
             print("[PTHT] Empty: "..emptySpots.." | Ready: "..#readySaplings.." | Growing: "..growingSaplings)
 
-                        if _G.AutoDropBlocks and countUsedSlots() >= Inventory.MaxSlots - 2
+            -- Auto drop blocks if inventory full
+            if _G.AutoDropBlocks and countUsedSlots() >= Inventory.MaxSlots - 2
             and _G.BlockDropX and _G.BlockDropY then
                 print("[PTHT] Inventory full, dropping blocks")
                 dropItemsAtPosition(blockID, _G.BlockDropX, _G.BlockDropY, math.floor(blocks/2), false)
@@ -1975,7 +2084,8 @@ local function StartPTHT(mv, wm, im, inv)
                 blocks = countInInventory(blockID)
             end
 
-                        if _G.AutoDropSaplings and seeds > totalCapacity + 200
+            -- Auto drop excess saplings
+            if _G.AutoDropSaplings and seeds > totalCapacity + 200
             and _G.SaplingDropX and _G.SaplingDropY then
                 print("[PTHT] Too many saplings, dropping excess")
                 dropItemsAtPosition(saplingID, _G.SaplingDropX, _G.SaplingDropY, seeds - totalCapacity, false)
@@ -1983,94 +2093,100 @@ local function StartPTHT(mv, wm, im, inv)
                 seeds = countInInventory(saplingID)
             end
 
-                        if #readySaplings > 0 then
-                print("[PTHT] ACTION: Harvesting "..#readySaplings.." ready saplings")
+            -- Priority 1: Harvest ready saplings
+            if #readySaplings > 0 then
+                print("[PTHT] ACTION: Harvesting " .. #readySaplings .. " ready saplings")
                 table.sort(readySaplings, function(a, b)
                     return a.y == b.y and a.x < b.x or a.y < b.y
                 end)
+
                 for i, sapling in ipairs(readySaplings) do
                     if not PTHT_Running or not _G.AutoPTHT then return end
                     kickWatchdog()
-                                        print("[HARVEST] "..i.."/"..#readySaplings.." - Walking to ("..sapling.x..","..sapling.y..")")
+                    print("[HARVEST] "..i.."/"..#readySaplings.." -> ("..sapling.x..","..sapling.y..")")
+
                     if not walkToTile(sapling.x, sapling.y) then
                         warn("[HARVEST] Walk failed to ("..sapling.x..","..sapling.y.."), skipping")
                         continue
                     end
-                                        if countUsedSlots() >= Inventory.MaxSlots - 3
+
+                    -- Mid-harvest inventory check
+                    if countUsedSlots() >= Inventory.MaxSlots - 3
                     and _G.BlockDropX and _G.BlockDropY then
                         blocks = countInInventory(blockID)
                         if blocks > 0 then
-                            print("[HARVEST] Inventory full, dropping blocks mid-harvest")
+                            print("[HARVEST] Inventory full mid-harvest, dropping blocks")
                             dropItemsAtPosition(blockID, _G.BlockDropX, _G.BlockDropY, math.floor(blocks/2), false)
                             task.wait(0.5)
                             walkToTile(sapling.x, sapling.y)
                         end
                     end
-                                        local tileId = WorldManager.GetTile(sapling.x, sapling.y, 1)
+
+                    local tileId = WorldManager.GetTile(sapling.x, sapling.y, 1)
                     if tileId and isSapling(tileId) then
-                        print("[HARVEST] Harvesting ("..sapling.x..","..sapling.y..")")
                         harvestSapling(sapling.x, sapling.y)
                         task.wait(harvestSpeed)
                         task.wait(0.15)
                     else
-                        print("[HARVEST] Tile empty or not sapling at ("..sapling.x..","..sapling.y..")")
+                        print("[HARVEST] Tile already gone at ("..sapling.x..","..sapling.y..")")
                     end
                 end
-                                print("[PTHT] Collecting drops after harvest")
+
+                print("[PTHT] Collecting drops after harvest")
                 local cx = ((minX + maxX) / 2) * TILE_SIZE
                 local cy = ((startY + endY) / 2) * TILE_SIZE
                 local cr = math.max((maxX-minX+1), (endY-startY+1)) * TILE_SIZE / 2 + TILE_SIZE * 3
                 local collected = collectDropsAndGems(false, Vector3.new(cx, cy, 0), cr)
-                print("[PTHT] Collected "..collected.." items")
+                print("[PTHT] Collected " .. collected .. " items")
                 seeds = countInInventory(saplingID)
                 invalidateFarmCache()
 
+            -- Priority 2: Plant if we have enough seeds
             elseif emptySpots > 0 and seeds >= totalCapacity then
-                print("[PTHT] ACTION: Planting (have enough seeds)")
+                print("[PTHT] ACTION: Planting (sufficient seeds)")
                 doPlant(ctx)
 
-                        elseif emptySpots > 0 and blocks > 0 then
+            -- Priority 3: Break blocks to generate saplings
+            elseif emptySpots > 0 and blocks > 0 then
                 local cooldownLeft = BREAK_CYCLE_COOLDOWN - (safeGetServerTime() - _lastBreakCycleTime)
                 if cooldownLeft <= 0 then
-                    print("[PTHT] ACTION: Breaking blocks to get saplings")
+                    print("[PTHT] ACTION: Breaking blocks for saplings")
                     doBreakCycle(ctx)
-                                        task.wait(0.3)
+                    task.wait(0.3)
                     if PTHT_Running and _G.AutoPTHT
                     and countInInventory(saplingID) >= totalCapacity then
-                        print("[PTHT] Got enough saplings from break, planting now")
+                        print("[PTHT] Got enough saplings, planting now")
                         doPlant(ctx)
                     end
                 else
-                    print("[PTHT] Break on cooldown for "..math.floor(cooldownLeft).."s")
+                    print("[PTHT] Break on cooldown: " .. math.floor(cooldownLeft) .. "s")
                     task.wait(math.min(cooldownLeft, 0.2) + 0.05)
                 end
 
-                        elseif emptySpots == 0 and growingSaplings > 0 then
-                print("[PTHT] ACTION: Waiting for saplings to grow")
+            -- Priority 4: Wait for growing saplings
+            elseif emptySpots == 0 and growingSaplings > 0 then
+                print("[PTHT] ACTION: All spots growing, waiting...")
                 task.wait(3)
                 invalidateFarmCache()
 
-                        else
-                print("[PTHT] ACTION: Recovering items from drop zones")
+            -- Priority 5: Recover from drop zones
+            else
+                print("[PTHT] ACTION: Recovering from drop zones")
                 local recoveredBlocks = 0
                 if _G.BlockDropX and _G.BlockDropY then
-                    print("[PTHT] Checking block drop zone")
                     recoveredBlocks = recoverFrom(_G.BlockDropX, _G.BlockDropY)
-                    if recoveredBlocks > 0 then 
-                        print("[PTHT] Recovered "..recoveredBlocks.." items from block zone")
-                        blocks = countInInventory(blockID) 
+                    if recoveredBlocks > 0 then
+                        blocks = countInInventory(blockID)
                     end
                 end
                 if blocks == 0 and _G.SaplingDropX and _G.SaplingDropY then
-                    print("[PTHT] Checking sapling drop zone")
                     local recoveredSeeds = recoverFrom(_G.SaplingDropX, _G.SaplingDropY)
-                    if recoveredSeeds > 0 then 
-                        print("[PTHT] Recovered "..recoveredSeeds.." items from sapling zone")
-                        seeds = countInInventory(saplingID) 
+                    if recoveredSeeds > 0 then
+                        seeds = countInInventory(saplingID)
                     end
                 end
                 if blocks == 0 and seeds == 0 then
-                    print("[PTHT] No resources, waiting...")
+                    print("[PTHT] No resources at all, waiting 5s...")
                     task.wait(recoveredBlocks == 0 and 5 or 1)
                 end
             end
@@ -2079,6 +2195,7 @@ local function StartPTHT(mv, wm, im, inv)
         end
 
         PTHT_Running = false
+        print("[PTHT] Main loop exited cleanly")
     end)
 end
 
@@ -2200,13 +2317,21 @@ local function getStatusIssue()
     if not _G.SelectedSaplingID or _G.SelectedSaplingID == "" then
         return "⚠ No sapling selected — pick one from the dropdown"
     end
-    if not _G.MinX or not _G.MaxX or not _G.StartY or not _G.EndY then
+    local minX   = tonumber(_G.MinX)
+    local maxX   = tonumber(_G.MaxX)
+    local startY = tonumber(_G.StartY)
+    local endY   = tonumber(_G.EndY)
+    if not minX or not maxX or not startY or not endY then
         return "⚠ Farm area not set — set Start and End positions"
     end
-    if _G.MinX >= _G.MaxX   then return "⚠ Min X must be less than Max X" end
-    if _G.StartY > _G.EndY  then return "⚠ Start Y must be less than or equal to End Y" end
-    if _G.AutoDropBlocks   and (not _G.BlockDropX   or not _G.BlockDropY)   then return "⚠ Auto Drop Blocks ON but Block Drop Position not set" end
-    if _G.AutoDropSaplings and (not _G.SaplingDropX or not _G.SaplingDropY) then return "⚠ Auto Drop Saplings ON but Sapling Drop Position not set" end
+    if minX >= maxX  then return "⚠ Min X must be less than Max X" end
+    if startY > endY then return "⚠ Start Y must be ≤ End Y" end
+    if _G.AutoDropBlocks   and (not _G.BlockDropX   or not _G.BlockDropY)   then
+        return "⚠ Auto Drop Blocks ON but Block Drop Position not set"
+    end
+    if _G.AutoDropSaplings and (not _G.SaplingDropX or not _G.SaplingDropY) then
+        return "⚠ Auto Drop Saplings ON but Sapling Drop Position not set"
+    end
     return nil
 end
 _G.getStatusIssue = getStatusIssue
@@ -2393,28 +2518,37 @@ local c4 = mkCard(p1, 4)
 mkCardHead(c4, "AREA SETTINGS")
 local b4 = mkCardBody(c4, 1)
 
-local _a, minXBoxL   = mkNumInput(b4, "Min X  (Start)",     0, 1, function(v) _G.MinX   = v end)
-local _b, maxXBoxL   = mkNumInput(b4, "Max X  (End)",      50, 2, function(v) _G.MaxX   = v end)
+local _a, minXBoxL   = mkNumInput(b4, "Min X  (Start)",     0,  1, function(v) _G.MinX   = tonumber(v) or 0  end)
+local _b, maxXBoxL   = mkNumInput(b4, "Max X  (End)",      50,  2, function(v) _G.MaxX   = tonumber(v) or 50 end)
 minXBox = minXBoxL; maxXBox = maxXBoxL
 mkDivider(b4, 3)
-local _c, startYBoxL = mkNumInput(b4, "Start Y  (Bottom)",  0, 4, function(v) _G.StartY = v end)
-local _d, endYBoxL   = mkNumInput(b4, "End Y  (Top)",      20, 5, function(v) _G.EndY   = v end)
+local _c, startYBoxL = mkNumInput(b4, "Start Y  (Bottom)",  0,  4, function(v) _G.StartY = tonumber(v) or 0  end)
+local _d, endYBoxL   = mkNumInput(b4, "End Y  (Top)",      20,  5, function(v) _G.EndY   = tonumber(v) or 20 end)
 startYBox = startYBoxL; endYBox = endYBoxL
 mkDivider(b4, 6)
 mkActionBtn(b4, "Set Start Position", 7, function()
     local c = LP.Character
     if c and c:FindFirstChild("HumanoidRootPart") then
         local pos = c.HumanoidRootPart.Position
-        local tx, ty = math.round(pos.X/4.5), math.round(pos.Y/4.5)
-        minXBox.Text=tostring(tx); startYBox.Text=tostring(ty); _G.MinX=tx; _G.StartY=ty
+        local tx = math.round(pos.X / 4.5)
+        local ty = math.round(pos.Y / 4.5)
+        minXBox.Text   = tostring(tx)
+        startYBox.Text = tostring(ty)
+        _G.MinX   = tx  -- already a number from math.round
+        _G.StartY = ty
     end
 end)
+
 mkActionBtn(b4, "Set End Position", 8, function()
     local c = LP.Character
     if c and c:FindFirstChild("HumanoidRootPart") then
         local pos = c.HumanoidRootPart.Position
-        local tx, ty = math.round(pos.X/4.5), math.round(pos.Y/4.5)
-        maxXBox.Text=tostring(tx); endYBox.Text=tostring(ty); _G.MaxX=tx; _G.EndY=ty
+        local tx = math.round(pos.X / 4.5)
+        local ty = math.round(pos.Y / 4.5)
+        maxXBox.Text = tostring(tx)
+        endYBox.Text = tostring(ty)
+        _G.MaxX = tx
+        _G.EndY = ty
     end
 end)
 end -- PAGE 1
