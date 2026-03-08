@@ -1322,103 +1322,153 @@ end
 -- We move them in SEPARATE phases to avoid diagonal AC detection,
 -- and handle Y specially since going "up" requires jump physics.
 -- ─────────────────────────────────────────────────────────────
-local WALK_SPT  = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) and 0.20 or 0.14
-local CLIMB_SPT = 0.18  -- slightly slower for vertical, gives server time to validate
+local WALK_SPT  = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) and 0.22 or 0.16
+local CLIMB_SPT = 0.20
 
 local function smoothstep(t)
     t = math.clamp(t, 0, 1)
     return t * t * (3 - 2 * t)
 end
-
 local function lerp(a, b, t) return a + (b - a) * t end
 
--- Lerp along ONE axis only, yielding each heartbeat
-local function lerpAxis(getter, setter, dest, duration, isVertical)
-    local src = getter()
-    if math.abs(src - dest) < 0.05 then
-        setter(dest)
-        return true
-    end
+-- Moves exactly ONE tile in ONE direction, snapping cleanly each step.
+-- Never interpolates across multiple tiles at once.
+local function stepOneTile(fromX, fromY, toX, toY)
+    if not movement then return false end
+    if not PTHT_Running or not _G.AutoPTHT then return false end
 
-    local elapsed = 0
+    local srcWorldX = fromX * TILE_SIZE
+    local srcWorldY = fromY * TILE_SIZE
+    local dstWorldX = toX   * TILE_SIZE
+    local dstWorldY = toY   * TILE_SIZE
+
+    -- Hard snap to source tile first — eliminates any prior drift
+    movement.Position  = Vector3.new(srcWorldX, srcWorldY, 0)
+    movement.VelocityX = 0
+    movement.VelocityY = 0
+    movement.Grounded  = true
+    RunService.Heartbeat:Wait()  -- let server see clean origin
+
+    local isVertical   = (toY ~= fromY)
+    local duration     = isVertical and CLIMB_SPT or WALK_SPT
+    local elapsed      = 0
+
     while elapsed < duration do
-        if not PTHT_Running or not _G.AutoPTHT then return false end
-        local dt = RunService.Heartbeat:Wait()
-        elapsed  = elapsed + dt
-        local t  = smoothstep(math.min(elapsed / duration, 1))
-        setter(lerp(src, dest, t))
+        if not PTHT_Running or not _G.AutoPTHT then
+            movement.VelocityX = 0
+            movement.VelocityY = 0
+            return false
+        end
 
+        local dt = RunService.Heartbeat:Wait()
+        elapsed  = math.min(elapsed + dt, duration)
+        local t  = smoothstep(elapsed / duration)
+
+        -- Interpolate position
+        local wx = lerp(srcWorldX, dstWorldX, t)
+        local wy = lerp(srcWorldY, dstWorldY, t)
+        movement.Position = Vector3.new(wx, wy, 0)
+
+        -- Set velocity to match direction
         if isVertical then
-            -- Going up: act like a jump (not grounded, positive Y velocity)
-            -- Going down: act like falling (not grounded, negative Y velocity)
-            local dir = dest > src and 1 or -1
+            local dir = toY > fromY and 1 or -1
             movement.Grounded  = false
             movement.VelocityY = dir * (TILE_SIZE / CLIMB_SPT)
             movement.VelocityX = 0
         else
+            local dir = toX > fromX and 1 or -1
             movement.Grounded  = true
-            movement.VelocityY = 0
-            -- Only set VelocityX for meaningful horizontal movement
-            local dir = dest > src and 1 or -1
             movement.VelocityX = dir * (TILE_SIZE / WALK_SPT)
+            movement.VelocityY = 0
         end
     end
 
-    setter(dest)
+    -- Hard snap to destination — no floating point residue
+    movement.Position  = Vector3.new(dstWorldX, dstWorldY, 0)
+    movement.VelocityX = 0
+    movement.VelocityY = 0
+    movement.Grounded  = true
+    RunService.Heartbeat:Wait()  -- let server register arrival
+
     return true
 end
 
-local function lerpToTile(targetX, targetY)
+local function walkToTile(targetX, targetY)
     if not movement then
-        warn("[PTHT] lerpToTile: movement is nil")
+        warn("[PTHT] walkToTile: movement is nil")
         return false
     end
+    if not movement.Position then
+        warn("[PTHT] walkToTile: movement.Position is nil")
+        return false
+    end
+    if not PTHT_Running then return false end
 
-    local destX = targetX * TILE_SIZE
-    local destY = targetY * TILE_SIZE
+    local startX = math.round(movement.Position.X / TILE_SIZE)
+    local startY = math.round(movement.Position.Y / TILE_SIZE)
 
-    -- Snap if already there
-    if math.abs(movement.Position.X - destX) < 0.05
-    and math.abs(movement.Position.Y - destY) < 0.05 then
-        movement.Position = Vector3.new(destX, destY, 0)
-        movement.VelocityX = 0
-        movement.Grounded  = true
-        return true
+    print("[PTHT] Walking ("..startX..","..startY..") -> ("..targetX..","..targetY..")")
+
+    if startX == targetX and startY == targetY then return true end
+
+    local path = pathCacheGet(startX, startY, targetX, targetY)
+
+    if not path then
+        print("🔍 [PTHT] Computing path...")
+        path = astar(startX, startY, targetX, targetY)
+        if not path then
+            warn(string.format("[PTHT] No path (%d,%d)->(%d,%d), rebuilding cache",
+                startX, startY, targetX, targetY))
+            invalidateTileCache()
+            pathCacheInvalidateAll()
+            task.spawn(function() prebakeCollision() end)
+            task.wait(0.5)
+            path = astar(startX, startY, targetX, targetY)
+            if not path then
+                warn("[PTHT] ❌ Still no path after rebuild")
+                return false
+            end
+        end
+        print("✅ [PTHT] Path: "..#path.." waypoints")
+        pathCachePut(startX, startY, targetX, targetY, path)
     end
 
-    local moveX = math.abs(movement.Position.X - destX) > 0.05
-    local moveY = math.abs(movement.Position.Y - destY) > 0.05
+    -- Walk tile by tile — re-read current tile position before each step
+    -- so any server correction is absorbed cleanly
+    local curX = startX
+    local curY = startY
 
-    -- Phase 1: Horizontal movement (if needed)
-    if moveX then
-        local ok = lerpAxis(
-            function() return movement.Position.X end,
-            function(v) movement.Position = Vector3.new(v, movement.Position.Y, 0) end,
-            destX,
-            WALK_SPT,
-            false  -- horizontal
-        )
-        if not ok then return false end
-        -- Brief settle between axes — prevents AC from seeing impossible transitions
-        movement.VelocityX = 0
-        movement.Grounded  = true
-        if moveY then RunService.Heartbeat:Wait() end
+    for i, waypoint in ipairs(path) do
+        if not PTHT_Running or not _G.AutoPTHT then
+            movement.VelocityX = 0
+            movement.VelocityY = 0
+            return false
+        end
+
+        kickWatchdog()
+
+        -- Re-snap current position from actual movement.Position
+        -- This absorbs any server correction between steps
+        curX = math.round(movement.Position.X / TILE_SIZE)
+        curY = math.round(movement.Position.Y / TILE_SIZE)
+
+        local nextX = waypoint.x
+        local nextY = waypoint.y
+
+        -- Skip if server already moved us there
+        if curX == nextX and curY == nextY then continue end
+
+        -- If server moved us off-path, replan from here
+        if math.abs(curX - nextX) > 1 or math.abs(curY - nextY) > 1 then
+            warn("[PTHT] Position drift detected at step "..i..", replanning")
+            return walkToTile(targetX, targetY)
+        end
+
+        if not stepOneTile(curX, curY, nextX, nextY) then
+            return false
+        end
     end
 
-    -- Phase 2: Vertical movement (if needed)
-    if moveY then
-        local ok = lerpAxis(
-            function() return movement.Position.Y end,
-            function(v) movement.Position = Vector3.new(destX, v, 0) end,
-            destY,
-            CLIMB_SPT,
-            true  -- vertical
-        )
-        if not ok then return false end
-    end
-
-    -- Clean stop
-    movement.Position  = Vector3.new(destX, destY, 0)
     movement.VelocityX = 0
     movement.VelocityY = 0
     movement.Grounded  = true
