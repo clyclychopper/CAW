@@ -2109,6 +2109,15 @@ local b1 = mkCardBody(c1, 1)
 
 local _, autoPTHTAPI = mkToggle(b1, "Enable Auto Farm", false, 1, function(on)
     if on then
+        -- Check if modules are loaded
+        if not movement or not WorldManager or not ItemsManager or not Inventory then
+            _G.AutoPTHT = false; task.wait(0.25)
+            if _G.UIElements.autoPTHTAPI    then _G.UIElements.autoPTHTAPI.setState(false, true) end
+            if _G.UIElements.pthtBadgeText  then _G.UIElements.pthtBadgeText.Text = "MODULE ERROR"; _G.UIElements.pthtBadgeText.TextColor3 = T.red end
+            if _G.UIElements.statusDetailLbl then _G.UIElements.statusDetailLbl.Text = "⚠ Modules not loaded yet — wait a moment and retry" end
+            if _G.UIElements.statusDot      then _G.UIElements.statusDot.BackgroundColor3 = T.red end
+            return
+        end
         if not Hub.StartPTHT then
             _G.AutoPTHT = false; task.wait(0.25)
             if _G.UIElements.autoPTHTAPI    then _G.UIElements.autoPTHTAPI.setState(false, true) end
@@ -2130,8 +2139,8 @@ local _, autoPTHTAPI = mkToggle(b1, "Enable Auto Farm", false, 1, function(on)
             if _G.UIElements.statusDot       then _G.UIElements.statusDot.BackgroundColor3 = T.red end
             return
         end
-        _G.AutoPTHT = true
-        Hub.StartPTHT()
+                _G.AutoPTHT = true
+        Hub.StartPTHT(movement, WorldManager, ItemsManager, Inventory)
         if _G.UIElements.pthtBadgeText   then _G.UIElements.pthtBadgeText.Text = "RUNNING"; _G.UIElements.pthtBadgeText.TextColor3 = T.green end
         if _G.UIElements.statusDetailLbl then _G.UIElements.statusDetailLbl.Text = "" end
         if _G.UIElements.statusDot       then _G.UIElements.statusDot.BackgroundColor3 = T.green end
@@ -3805,4 +3814,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YSF")
+print("YS YS YS YS YS YS")
