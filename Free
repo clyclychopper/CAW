@@ -3027,7 +3027,7 @@ local function prebakeCollision()
         local _lastMinimapUpdate = 0
     local MINIMAP_UPDATE_COOLDOWN = 3
     
-    local function updateMinimap(forceUpdate)
+        local function updateMinimap(forceUpdate)
         if _mmBuilding then return end
         if not forceUpdate then
             local now = os.clock()
@@ -3036,6 +3036,7 @@ local function prebakeCollision()
         end
         _mmBuilding = true
         task.spawn(function()
+            local success, err = pcall(function()
             local minX   = _G.MinX
             local maxX   = _G.MaxX
             local startY = _G.StartY
@@ -3151,8 +3152,12 @@ local function prebakeCollision()
                 mmPlayer.Visible = false
             end
 
-            mmCoordLabel.Text = "("..minX..","..startY..")→("..maxX..","..endY..")"
+                        mmCoordLabel.Text = "("..minX..","..startY..")→("..maxX..","..endY..")"
             mmFarmLabel.Text  = "FARM MAP  "..farmW.."×"..farmH
+            end)
+            if not success then
+                warn("[Minimap] Error: " .. tostring(err))
+            end
             _mmBuilding = false
         end)
     end
