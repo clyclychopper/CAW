@@ -1542,18 +1542,18 @@ local function prebakeCollision()
     local function harvestSapling(x, y)
         local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
         if not remote then return false end
-                                -- Stabilize position once before harvesting (FASTER)
+                                                -- Stabilize position once before harvesting (ULTRA FAST)
         if movement then
             movement.Grounded = true
             movement.VelocityX = 0
             movement.VelocityY = 0
             movement.Position = Vector3.new(x * TILE_SIZE, y * TILE_SIZE, 0)
-            task.wait(0.1)
+            task.wait(0.05)
         end
         
         local pos   = Vector2.new(x, y)
         local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-        local delay   = isMob and 0.25 or 0.15
+        local delay   = isMob and 0.15 or 0.08
         local maxHits = isMob and 10 or 8
         
         for hit = 1, maxHits do
@@ -1566,10 +1566,10 @@ local function prebakeCollision()
             
             if hit % 3 == 0 then kickWatchdog() end
             
-                        pcall(function() remote:FireServer(pos) end)
+            pcall(function() remote:FireServer(pos) end)
             task.wait(delay)
         end
-        task.wait(isMob and 0.3 or 0.2)
+        task.wait(isMob and 0.15 or 0.1)
         if not (WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)) then
             tileCache[x * 10000 + y] = false
             markInventoryDirty()
@@ -1931,65 +1931,63 @@ local function prebakeCollision()
         movement.VelocityY = 0
         task.wait(0.2)
         
-        local broken = {}
-        local attempts = {}
-        local MAX_ATTEMPTS = 8
-        for _, t in ipairs(tilesToBreak) do attempts[t.x * 10000 + t.y] = 0 end
-        local allDone = false
+                local broken = {}
+        local MAX_CYCLES = 15
         local cycleStart = safeGetServerTime()
-        local iter = 0
+        local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
         
-        while PTHT_Running and _G.AutoPTHT and not allDone do
-            iter = iter + 1
-            if iter % 5 == 0 and (safeGetServerTime() - cycleStart) > 30 then
+        if not remote then
+            warn("[BREAK] PlayerFist remote not found")
+            _lastBreakCycleTime = safeGetServerTime()
+            setWatchdogExtended(false)
+            return
+        end
+        
+        -- SPAM BREAKING: Hit all blocks continuously until all are broken
+        for cycle = 1, MAX_CYCLES do
+            if not PTHT_Running or not _G.AutoPTHT then break end
+            if (safeGetServerTime() - cycleStart) > 30 then
                 warn("[YSHub] Break cycle timeout"); break
             end
-            kickWatchdog()
-            allDone = true
             
+            if cycle % 3 == 0 then kickWatchdog() end
+            
+            -- Lock position
+            movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
+            movement.Grounded = true
+            movement.VelocityX = 0
+            movement.VelocityY = 0
+            
+            local allBroken = true
+            
+            -- SPAM: Hit all blocks rapidly in sequence
             for _, tile in ipairs(tilesToBreak) do
                 if not PTHT_Running or not _G.AutoPTHT then break end
                 local k = tile.x * 10000 + tile.y
                 
-                if broken[k] then
-                    -- already done
-                else
+                if not broken[k] then
                     local stillThere = WorldManager.GetTile(tile.x, tile.y, 1)
                                     or WorldManager.GetTile(tile.x, tile.y, 2)
                     if not stillThere then
-                        broken[k] = true; tileCache[k] = false
-                    elseif attempts[k] >= MAX_ATTEMPTS then
                         broken[k] = true
-                        warn("[YSHub] Tile ("..tile.x..","..tile.y..") max attempts")
-                                        else
-                        allDone = false
-                        attempts[k] = attempts[k] + 1
-                        
-                        movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
-                        movement.Grounded = true
-                        movement.VelocityX = 0
-                        movement.VelocityY = 0
-                        
-                                                local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
-                        if remote then
-                            -- Hit twice per attempt for safety (FASTER)
-                            pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
-                            task.wait(0.03)
-                            pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
-                        end
-                        
-                        local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-                        task.wait(isMob and 0.2 or math.max(0.03, ctx.breakSpeed))
-                        
-                        -- Extra verification after hitting (FASTER)
-                        task.wait(0.05)
-                        if not (WorldManager.GetTile(tile.x, tile.y, 1) or WorldManager.GetTile(tile.x, tile.y, 2)) then
-                            broken[k] = true
-                            tileCache[k] = false
-                        end
+                        tileCache[k] = false
+                    else
+                        allBroken = false
+                        -- SPAM HIT (no delay between blocks)
+                        pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
                     end
                 end
             end
+            
+            -- Check if all blocks are broken
+            if allBroken then
+                print("[BREAK] All blocks broken after "..cycle.." cycles")
+                break
+            end
+            
+            -- Small delay after hitting all blocks once
+            local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+            task.wait(isMob and 0.15 or 0.08)
         end
         
         _lastBreakCycleTime = safeGetServerTime()
@@ -2296,12 +2294,49 @@ local function prebakeCollision()
                         end
                     end
 
-                    print("[PTHT] Collecting drops after harvest")
-                    local cx = ((minX + maxX) / 2) * TILE_SIZE
-                    local cy = ((startY + endY) / 2) * TILE_SIZE
-                    local cr = math.max((maxX-minX+1), (endY-startY+1)) * TILE_SIZE / 2 + TILE_SIZE * 3
-                    local collected = collectDropsAndGems(false, Vector3.new(cx, cy, 0), cr)
-                    print("[PTHT] Collected " .. collected .. " items")
+                                        print("[PTHT] Collecting drops after harvest")
+                    
+                    -- Gather all drop positions in farm area
+                    local dropPositions = {}
+                    for _, drop in ipairs(workspace.Drops:GetChildren()) do
+                        if drop and drop.Parent then
+                            local dropTileX = math.round(drop.Position.X / TILE_SIZE)
+                            local dropTileY = math.round(drop.Position.Y / TILE_SIZE)
+                            
+                            -- Only collect drops within farm boundaries
+                            if dropTileX >= minX and dropTileX <= maxX
+                            and dropTileY >= startY and dropTileY <= endY then
+                                table.insert(dropPositions, {x = dropTileX, y = dropTileY})
+                            end
+                        end
+                    end
+                    
+                    -- Sort drops by distance for efficient collection
+                    if #dropPositions > 0 then
+                        local curX = math.round(movement.Position.X / TILE_SIZE)
+                        local curY = math.round(movement.Position.Y / TILE_SIZE)
+                        table.sort(dropPositions, function(a, b)
+                            local distA = math.abs(a.x - curX) + math.abs(a.y - curY)
+                            local distB = math.abs(b.x - curX) + math.abs(b.y - curY)
+                            return distA < distB
+                        end)
+                        
+                        -- Walk to each drop position
+                        local collected = 0
+                        for i, pos in ipairs(dropPositions) do
+                            if not PTHT_Running or not _G.AutoPTHT then break end
+                            if i > 50 then break end -- Limit to 50 drops per cycle
+                            
+                            if walkToTile(pos.x, pos.y) then
+                                task.wait(0.15)
+                                collected = collected + 1
+                            end
+                        end
+                        print("[PTHT] Collected " .. collected .. " drops from farm")
+                    else
+                        print("[PTHT] No drops found in farm area")
+                    end
+                    
                     seeds = countInInventory(saplingID)
                     invalidateFarmCache()
 
