@@ -4392,4 +4392,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YS YS YS YS YS YS")
+print("YSSSS")
