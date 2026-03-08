@@ -1392,7 +1392,7 @@ local function walkToTile(targetX, targetY)
     local startX = math.round(movement.Position.X / TILE_SIZE)
     local startY = math.round(movement.Position.Y / TILE_SIZE)
 
-    print("🚶 [PTHT] Walking (".startX..","..startY..") → ("..targetX..","..targetY..")")
+    print("🚶 [PTHT] Walking ("..tostring(startX)..","..tostring(startY)..") → ("..tostring(targetX)..","..tostring(targetY)..")")
 
     if startX == targetX and startY == targetY then return true end
 
@@ -2221,7 +2221,7 @@ end
 local function StartPTHT()
     if PTHT_Running then return end
 
-    print("\n🚀 [PTHT] Starting bot...")
+        print("\n🚀 [PTHT] Starting bot...")
     print("📦 [PTHT] Checking modules...")
     print("   WorldManager: ", WorldManager and "✓" or "✗")
     print("   ItemsManager: ", ItemsManager and "✓" or "✗")
@@ -2234,9 +2234,9 @@ local function StartPTHT()
         return
     end
 
-    print("📍 [PTHT] Farm area: (".._G.MinX..",".._G.StartY..") → (".._G.MaxX..",".._G.EndY..")")
-    print("🌱 [PTHT] Sapling: "..((_G.SelectedSaplingName or "none")))
-    print("🧱 [PTHT] Block: "..((_G.SelectedBlockName or "none")))
+    print("📍 [PTHT] Farm area: ("..tostring(_G.MinX or 0)..","..tostring(_G.StartY or 0)..") → ("..tostring(_G.MaxX or 50)..","..tostring(_G.EndY or 20)..")")
+    print("🌱 [PTHT] Sapling: "..tostring(_G.SelectedSaplingName or "none"))
+    print("🧱 [PTHT] Block: "..tostring(_G.SelectedBlockName or "none"))
 
     PTHT_Running = true
     invalidateFarmCache()
