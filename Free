@@ -1032,65 +1032,81 @@ Hub.isSapling   = isSapling
 -- PTHT MODULE SCOPE
 -- All pathfinding, movement, and farm automation lives here.
 -- ─────────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
+-- PTHT MODULE SCOPE
+-- All pathfinding, movement, and farm automation lives here.
+-- ─────────────────────────────────────────────────────────────
 do
-local TILE_SIZE       = Hub.TILE_SIZE       -- World units per tile (4.5)
-local WORLD_W         = Hub.WORLD_W         -- Max X boundary
-local WORLD_H         = Hub.WORLD_H         -- Max Y boundary
-local ASTAR_MAX_NODES = Hub.ASTAR_MAX_NODES -- A* node expansion cap
-local MAX_JUMP        = Hub.MAX_JUMP        -- Max jump height in tiles
-local MAX_FALL        = Hub.MAX_FALL        -- Max fall distance in tiles
+
+local TILE_SIZE       = Hub.TILE_SIZE
+local WORLD_W         = Hub.WORLD_W
+local WORLD_H         = Hub.WORLD_H
+local ASTAR_MAX_NODES = Hub.ASTAR_MAX_NODES
+local MAX_JUMP        = Hub.MAX_JUMP
+local MAX_FALL        = Hub.MAX_FALL
 
 -- ── State flags ───────────────────────────────────────────────
-local PTHT_Running = false  -- Main bot loop active?
-local _dropLock    = false  -- Prevents re-entrant drop operations (ONE declaration only)
+local PTHT_Running = false
+local _dropLock    = false
 
 -- ── Tile collision cache ──────────────────────────────────────
--- Key: x*10000+y → true (blocked) / false (passable)
+-- key = x*10000+y → true (solid) / false (passable)
 local tileCache        = {}
-local tileCacheVersion = 0  -- Incremented on invalidation so path cache can detect staleness
+local tileCacheVersion = 0
 
 -- ── Item data cache ───────────────────────────────────────────
--- Avoids repeated RequestItemData calls for the same item IDs
 _G.itemDataCache = _G.itemDataCache or {}
 local itemDataCache = _G.itemDataCache
 
 -- ── Drop cooldown tracking ────────────────────────────────────
 local _lastBlockDropTime   = 0
 local _lastSaplingDropTime = 0
-local DROP_ZONE_AVOID_DURATION = 4  -- seconds to avoid re-collecting own drops
+local DROP_ZONE_AVOID_DURATION = 4
 
 -- ── Drop scan cache ───────────────────────────────────────────
 local _lastDropScan       = 0
 local _cachedDrops        = {}
 local _cachedGems         = {}
-local DROP_CACHE_INTERVAL = 0.5  -- Re-scan world drops every 0.5s max
+local DROP_CACHE_INTERVAL = 0.5
 
 -- ─────────────────────────────────────────────────────────────
 -- TILE CACHE HELPERS
 -- ─────────────────────────────────────────────────────────────
 
--- Marks all cached collision data as stale and bumps version
--- so any path cache entries referencing old tile data are discarded
 local function invalidateTileCache()
     tileCache        = {}
     tileCacheVersion = tileCacheVersion + 1
 end
 
--- Returns true if tile (x,y) is solid/blocked
-local function isTileBlocked(x, y)
+-- FIX 1: Renamed from isTileBlocked → isSolid (used everywhere consistently)
+-- A tile is solid if it's in tileCache as true OR out of bounds.
+local function isSolid(x, y)
+    if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then
+        return true  -- world boundary = solid wall
+    end
     return tileCache[x * 10000 + y] == true
 end
 
--- Returns true if position is valid (not blocked, within bounds)
--- You CAN move through air, just not through solid blocks
-local function isValidPosition(x, y)
-    if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then return false end
-    return not isTileBlocked(x, y)
+local function isAir(x, y)
+    return not isSolid(x, y)
 end
 
--- Bakes the collision cache for the farm region + padding.
--- Called once at bot start and after any tile-invalidating event.
--- FIX: Added module nil-guard and retry on empty bake result.
+-- FIX 2: canStandAt no longer requires y-1 to be in the cache as solid.
+-- Instead it checks: body tile is air AND either ground is solid OR y==0 (floor).
+-- This prevents start/goal nodes from being rejected due to cache misses.
+local function canStandAt(x, y)
+    if not isAir(x, y) then return false end        -- body blocked
+    if not isAir(x, y + 1) then return false end    -- head blocked
+    -- ground = solid tile below feet, OR at world floor (y==0)
+    return y == 0 or isSolid(x, y - 1)
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- COLLISION BAKE
+-- Reads WorldManager tile data and writes solid/passable into tileCache.
+-- FIX 3: Now checks BOTH layer 1 and layer 2 for solid tiles, so background
+-- blocks that block movement are correctly marked as solid.
+-- ─────────────────────────────────────────────────────────────
 local function prebakeCollision()
     if not WorldManager or not ItemsManager then
         warn("[YSHub] prebakeCollision: modules not ready, skipping")
@@ -1099,23 +1115,23 @@ local function prebakeCollision()
 
     invalidateTileCache()
 
-    -- Farm area + 10-tile border for pathfinding headroom
     local x0 = math.max(0,       (_G.MinX   or 0)  - 10)
     local x1 = math.min(WORLD_W, (_G.MaxX   or 50) + 10)
     local y0 = math.max(0,       (_G.StartY or 0)  - 10)
     local y1 = math.min(WORLD_H, (_G.EndY   or 20) + 10)
 
-    -- Pass 1: collect unique tile IDs we haven't cached item data for yet
+    -- Pass 1: collect unique tile IDs not yet in itemDataCache
     local uniqueIds = {}
     for x = x0, x1 do
         if not PTHT_Running then return false end
         for y = y0, y1 do
-            local tileId = WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)
-            if tileId and not isSapling(tileId) and not itemDataCache[tileId] then
-                uniqueIds[tileId] = true
+            for _, layer in ipairs({1, 2}) do
+                local tileId = WorldManager.GetTile(x, y, layer)
+                if tileId and not isSapling(tileId) and not itemDataCache[tileId] then
+                    uniqueIds[tileId] = true
+                end
             end
         end
-        -- Yield every 10 columns to avoid frame spikes
         if x % 10 == 0 then task.wait() end
     end
 
@@ -1126,45 +1142,48 @@ local function prebakeCollision()
         if ok and data then itemDataCache[tileId] = data end
     end
 
-        -- Pass 3: write collision booleans into tileCache
-    -- IMPORTANT: Only check layer 1 (foreground) - layer 2 is background/decorative
-    local tileCount = 0
+    -- Pass 3: write collision booleans.
+    -- A tile is solid if layer 1 OR layer 2 has a non-sapling, collidable block.
+    local tileCount   = 0
+    local blockedCount = 0
+
     for x = x0, x1 do
         if not PTHT_Running then return false end
         for y = y0, y1 do
-            local tileId = WorldManager.GetTile(x, y, 1)  -- Only layer 1 is solid
-            if tileId then
-                if isSapling(tileId) then
-                    -- Saplings are passable — player walks through them
-                    tileCache[x * 10000 + y] = false
-                else
-                    local data = itemDataCache[tileId]
-                    -- Block if Collision >= 1; default to blocked if data missing
-                    tileCache[x * 10000 + y] = (data == nil)
-                        or (data.Tile and (data.Tile.Collision or 1) >= 1)
+            local key = x * 10000 + y
+            local solid = false
+
+            for _, layer in ipairs({1, 2}) do
+                local tileId = WorldManager.GetTile(x, y, layer)
+                if tileId then
+                    if isSapling(tileId) then
+                        -- saplings are always passable, skip
+                    else
+                        local data = itemDataCache[tileId]
+                        -- default to solid if data missing (safe fallback)
+                        if data == nil or (data.Tile and (data.Tile.Collision or 1) >= 1) then
+                            solid = true
+                            break  -- no need to check layer 2 if layer 1 is solid
+                        end
+                    end
                 end
-            else
-                tileCache[x * 10000 + y] = false  -- Empty tile = passable
             end
+
+            tileCache[key] = solid
             tileCount = tileCount + 1
+            if solid then blockedCount = blockedCount + 1 end
         end
         if x % 5 == 0 then task.wait() end
     end
 
-        local blockedCount = 0
-    local passableCount = 0
-    for k, v in pairs(tileCache) do
-        if v then blockedCount = blockedCount + 1
-        else passableCount = passableCount + 1 end
-    end
-    print(string.format("[YSHub] Collision bake: %d tiles, %d blocked, %d passable", tileCount, blockedCount, passableCount))
+    print(string.format("[YSHub] Collision bake: %d tiles, %d blocked, %d passable",
+        tileCount, blockedCount, tileCount - blockedCount))
+
     return tileCount > 0
 end
 
 -- ─────────────────────────────────────────────────────────────
 -- A* PATH CACHE
--- Stores recently computed paths keyed by start+goal.
--- Entries are invalidated when tileCacheVersion changes.
 -- ─────────────────────────────────────────────────────────────
 local _pathCache      = {}
 local _pathCacheOrder = {}
@@ -1178,7 +1197,6 @@ end
 local function pathCacheGet(sx, sy, gx, gy)
     local entry = _pathCache[_pathKey(sx, sy, gx, gy)]
     if not entry then return nil end
-    -- Discard stale entries when tiles have changed
     if entry.tileVersion ~= tileCacheVersion then
         _pathCache[_pathKey(sx, sy, gx, gy)] = nil
         _pathCacheSize = math.max(0, _pathCacheSize - 1)
@@ -1193,7 +1211,6 @@ local function pathCachePut(sx, sy, gx, gy, path)
         _pathCache[key] = { path = path, tileVersion = tileCacheVersion }
         return
     end
-    -- Evict oldest entry when cache is full
     while _pathCacheSize >= PATH_CACHE_MAX do
         local oldKey = table.remove(_pathCacheOrder, 1)
         if oldKey and _pathCache[oldKey] then
@@ -1213,7 +1230,7 @@ local function pathCacheInvalidateAll()
 end
 
 -- ─────────────────────────────────────────────────────────────
--- A* PRIORITY QUEUE (binary min-heap on .f score)
+-- BINARY MIN-HEAP PRIORITY QUEUE (on .f score)
 -- ─────────────────────────────────────────────────────────────
 local _pqData = {}
 local _pqSize = 0
@@ -1221,7 +1238,6 @@ local _pqSize = 0
 local function pqPush(node)
     _pqSize = _pqSize + 1
     _pqData[_pqSize] = node
-    -- Bubble up
     local i = _pqSize
     while i > 1 do
         local p = math.floor(i / 2)
@@ -1239,7 +1255,6 @@ local function pqPop()
     _pqSize = _pqSize - 1
     if _pqSize > 0 then
         _pqData[1] = last
-        -- Sift down
         local i = 1
         while true do
             local l, r, s = i * 2, i * 2 + 1, i
@@ -1261,49 +1276,11 @@ end
 local function pqIsEmpty() return _pqSize == 0 end
 
 -- ─────────────────────────────────────────────────────────────
--- A* PATHFINDER
--- Grid-based Manhattan-heuristic A*.
--- Returns a list of {x, y} tile waypoints from start → goal,
--- or nil if no path exists within ASTAR_MAX_NODES expansions.
+-- NEIGHBOUR GENERATION
+-- FIX 4: Replaced `continue` (invalid Lua) with nested if-blocks.
+-- `continue` only exists in Luau via `goto continue` + label.
+-- This was silently skipping ALL fall neighbours.
 -- ─────────────────────────────────────────────────────────────
--- ─────────────────────────────────────────────────────────────
--- GROWTOPIA-STYLE PATHFINDING
--- 
--- World model:
---   "solid" tile  = blocked, can be stood ON (y+1 above it)
---   "air" tile    = passable, player occupies this space
---   player stands at tile (x, y) meaning:
---     tileCache[x, y]   = AIR  (player body)
---     tileCache[x, y-1] = SOLID (ground beneath feet)
---
--- Valid moves from position (x, y):
---   WALK LEFT/RIGHT  : (x±1, y) is air AND (x±1, y-1) is solid
---   JUMP UP 1-3      : straight up or diagonal while ascending,
---                      must have clearance, must land on solid
---   FALL             : drop straight down or diagonally while
---                      no solid below current pos
--- ─────────────────────────────────────────────────────────────
-
-local function isSolid(x, y)
-    if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then return true end -- world boundary = solid
-    return tileCache[x * 10000 + y] == true
-end
-
-local function isAir(x, y)
-    if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then return false end
-    return not isSolid(x, y)
-end
-
--- Can the player stand at tile (x, y)?
--- Needs air at y and y+1 (head clearance), solid at y-1
-local function canStandAt(x, y)
-    return isAir(x, y)
-       and isAir(x, y + 1)   -- head clearance
-       and isSolid(x, y - 1) -- ground beneath feet
-end
-
--- Build all valid moves from a standing position (x, y)
--- Returns list of {x, y, cost} reachable positions
 local function getNeighbours(x, y)
     local result = {}
 
@@ -1315,63 +1292,66 @@ local function getNeighbours(x, y)
         end
     end
 
-    -- ── JUMP: up to 3 tiles high, land on solid ────────────────
-    -- The player rises vertically then can move horizontally
-    -- We model this as: for each jump height h (1–3),
-    -- check all horizontal offsets reachable at that apex
-    -- (simple model: can move ±h horizontal tiles at apex)
+    -- ── JUMP: up to 3 tiles high ───────────────────────────────
     for h = 1, 3 do
-        -- Check vertical clearance for the jump column
         local clearUp = true
         for dy = 1, h do
             if not isAir(x, y + dy) or not isAir(x, y + dy + 1) then
-                clearUp = false; break
+                clearUp = false
+                break
             end
         end
-        if not clearUp then break end -- can't jump higher if blocked
+        if not clearUp then break end
 
-        -- At apex (x, y+h): try landing directly above or offset
         for dx = -h, h do
             local lx = x + dx
             local ly = y + h
-
-            -- Check horizontal path at jump height is clear
-            -- (simplified: just check destination, not every intermediate tile
-            --  for longer jumps this is approximate but works well enough)
             local pathClear = true
+
             if dx ~= 0 then
                 local stepX = dx > 0 and 1 or -1
-                for cx = x + stepX, lx - stepX, stepX do
+                local cx = x + stepX
+                while cx ~= lx do
                     if not isAir(cx, ly) or not isAir(cx, ly + 1) then
-                        pathClear = false; break
+                        pathClear = false
+                        break
                     end
+                    cx = cx + stepX
                 end
             end
 
             if pathClear and canStandAt(lx, ly) then
-                -- Cost = jump height + horizontal distance (penalise longer jumps)
                 local jumpCost = h + math.abs(dx) * 0.5
                 table.insert(result, {x = lx, y = ly, cost = jumpCost})
             end
         end
     end
 
-    -- ── FALL: drop straight down or walk off edge ──────────────
+    -- ── FALL: drop down, optionally stepping sideways ──────────
+    -- FIX 4 continued: replaced `continue` with proper if-block
     for _, dx in ipairs({-1, 0, 1}) do
-        local fx = x + dx
-        -- Can only step sideways if that tile is air (walk off ledge)
-        if dx ~= 0 and not isAir(fx, y) then continue end
+        local canStep = true
 
-        -- Fall until we hit solid ground
-        for drop = 1, 20 do -- max fall distance cap
-            local fy = y - drop
-            if fy < 0 then break end
-            if isSolid(fx, fy - 1) and isAir(fx, fy) and isAir(fx, fy + 1) then
-                -- Landed. Cost = fall distance (falling is free but prioritise shorter falls)
-                table.insert(result, {x = fx, y = fy, cost = drop * 0.3 + math.abs(dx)})
-                break
-            elseif isSolid(fx, fy) then
-                break -- hit a wall while falling
+        -- For diagonal falls, the sideways tile must be air (walk off ledge)
+        if dx ~= 0 and not isAir(x + dx, y) then
+            canStep = false
+        end
+
+        if canStep then
+            local fx = x + dx
+            for drop = 1, 20 do
+                local fy = y - drop
+                if fy < 0 then break end
+
+                if isSolid(fx, fy) then
+                    -- Hit a wall while falling diagonally — stop
+                    break
+                elseif isSolid(fx, fy - 1) and isAir(fx, fy) and isAir(fx, fy + 1) then
+                    -- Found a valid landing spot
+                    local fallCost = drop * 0.3 + math.abs(dx)
+                    table.insert(result, {x = fx, y = fy, cost = fallCost})
+                    break
+                end
             end
         end
     end
@@ -1380,28 +1360,64 @@ local function getNeighbours(x, y)
 end
 
 -- ─────────────────────────────────────────────────────────────
--- A* using physics-aware neighbour function
+-- A* PATHFINDER
+-- FIX 5: Removed goal solid-block check that rejected valid air-tile goals.
+-- The goal is where the player needs to STAND, which is an air tile above solid.
 -- ─────────────────────────────────────────────────────────────
 local function astar(startX, startY, goalX, goalY)
-      -- Check goal is not inside a solid block (can be in air for jumping)
-  if isTileBlocked(goalX, goalY) then
-      warn(string.format("[PTHT] Goal (%d,%d) is inside a solid block", goalX, goalY))
-      return nil
-  end
     if startX == goalX and startY == goalY then return {} end
+
+    -- Validate start: must be able to stand there (or be at y=0 floor)
+    if not canStandAt(startX, startY) and startY ~= 0 then
+        warn(string.format("[PTHT] A*: start (%d,%d) is not a valid standing position", startX, startY))
+        -- Try one tile up as recovery
+        if canStandAt(startX, startY + 1) then
+            startY = startY + 1
+            warn("[PTHT] A*: adjusted start up by 1")
+        end
+    end
+
+    -- Validate goal: must be standable
+    if not canStandAt(goalX, goalY) then
+        warn(string.format("[PTHT] A*: goal (%d,%d) is not standable, searching nearby", goalX, goalY))
+        -- Search in expanding radius for nearest valid standing tile
+        local found = false
+        for radius = 1, 4 do
+            for dy = -radius, radius do
+                for dx = -radius, radius do
+                    if math.abs(dx) == radius or math.abs(dy) == radius then
+                        local nx, ny = goalX + dx, goalY + dy
+                        if canStandAt(nx, ny) then
+                            goalX, goalY = nx, ny
+                            found = true
+                            warn(string.format("[PTHT] A*: adjusted goal to (%d,%d)", goalX, goalY))
+                            break
+                        end
+                    end
+                end
+                if found then break end
+            end
+            if found then break end
+        end
+        if not found then
+            warn("[PTHT] A*: no valid goal found within radius 4")
+            return nil
+        end
+    end
+
+    local function tileKey(x, y) return x * 10000 + y end
+
+    -- Heuristic: Manhattan with vertical penalty (going up costs more)
+    local function heuristic(x, y)
+        local dy = goalY - y
+        return math.abs(x - goalX) + math.abs(dy) + (dy > 0 and dy * 0.5 or 0)
+    end
 
     local closed   = {}
     local cameFrom = {}
     local gScore   = {}
 
     pqReset()
-
-    local function tileKey(x, y) return x * 10000 + y end
-    local function heuristic(x, y)
-        -- Manhattan + vertical penalty (going up is expensive)
-        local dy = goalY - y
-        return math.abs(x - goalX) + math.abs(dy) + (dy > 0 and dy * 0.5 or 0)
-    end
 
     local sk = tileKey(startX, startY)
     gScore[sk] = 0
@@ -1412,16 +1428,18 @@ local function astar(startX, startY, goalX, goalY)
     while not pqIsEmpty() do
         expanded = expanded + 1
         if expanded > ASTAR_MAX_NODES then
-            warn("[YSHub] A*: node limit hit"); return nil
+            warn("[YSHub] A*: node expansion limit hit ("..ASTAR_MAX_NODES..")")
+            return nil
         end
 
         local cur = pqPop()
         local ck  = tileKey(cur.x, cur.y)
+
         if closed[ck] then continue end
         closed[ck] = true
 
         if cur.x == goalX and cur.y == goalY then
-            -- Reconstruct path
+            -- Reconstruct path from cameFrom chain
             local path = {}
             local node = ck
             while cameFrom[node] do
@@ -1445,184 +1463,22 @@ local function astar(startX, startY, goalX, goalY)
         end
     end
 
-    return nil
+    return nil  -- no path exists
 end
 
 -- ─────────────────────────────────────────────────────────────
--- LERP WALK
--- Key insight: X and Y movement are physically different in this
--- game. X is horizontal walking (VelocityX). Y is vertical/jump.
--- We move them in SEPARATE phases to avoid diagonal AC detection,
--- and handle Y specially since going "up" requires jump physics.
--- ─────────────────────────────────────────────────────────────
-local WALK_SPT  = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) and 0.22 or 0.16
-local CLIMB_SPT = 0.20
-
-local function smoothstep(t)
-    t = math.clamp(t, 0, 1)
-    return t * t * (3 - 2 * t)
-end
-local function lerp(a, b, t) return a + (b - a) * t end
-
--- Moves exactly ONE tile in ONE direction, snapping cleanly each step.
--- Never interpolates across multiple tiles at once.
-local function stepOneTile(fromX, fromY, toX, toY)
-    if not movement then return false end
-    if not PTHT_Running or not _G.AutoPTHT then return false end
-
-    local srcWorldX = fromX * TILE_SIZE
-    local srcWorldY = fromY * TILE_SIZE
-    local dstWorldX = toX   * TILE_SIZE
-    local dstWorldY = toY   * TILE_SIZE
-
-    -- Hard snap to source tile first — eliminates any prior drift
-    movement.Position  = Vector3.new(srcWorldX, srcWorldY, 0)
-    movement.VelocityX = 0
-    movement.VelocityY = 0
-    movement.Grounded  = true
-    RunService.Heartbeat:Wait()  -- let server see clean origin
-
-    local isVertical   = (toY ~= fromY)
-    local duration     = isVertical and CLIMB_SPT or WALK_SPT
-    local elapsed      = 0
-
-    while elapsed < duration do
-        if not PTHT_Running or not _G.AutoPTHT then
-            movement.VelocityX = 0
-            movement.VelocityY = 0
-            return false
-        end
-
-        local dt = RunService.Heartbeat:Wait()
-        elapsed  = math.min(elapsed + dt, duration)
-        local t  = smoothstep(elapsed / duration)
-
-        -- Interpolate position
-        local wx = lerp(srcWorldX, dstWorldX, t)
-        local wy = lerp(srcWorldY, dstWorldY, t)
-        movement.Position = Vector3.new(wx, wy, 0)
-
-        -- Set velocity to match direction
-        if isVertical then
-            local dir = toY > fromY and 1 or -1
-            movement.Grounded  = false
-            movement.VelocityY = dir * (TILE_SIZE / CLIMB_SPT)
-            movement.VelocityX = 0
-        else
-            local dir = toX > fromX and 1 or -1
-            movement.Grounded  = true
-            movement.VelocityX = dir * (TILE_SIZE / WALK_SPT)
-            movement.VelocityY = 0
-        end
-    end
-
-    -- Hard snap to destination — no floating point residue
-    movement.Position  = Vector3.new(dstWorldX, dstWorldY, 0)
-    movement.VelocityX = 0
-    movement.VelocityY = 0
-    movement.Grounded  = true
-    RunService.Heartbeat:Wait()  -- let server register arrival
-
-    return true
-end
-
-local function walkToTile(targetX, targetY)
-    if not movement then
-        warn("[PTHT] walkToTile: movement is nil")
-        return false
-    end
-    if not movement.Position then
-        warn("[PTHT] walkToTile: movement.Position is nil")
-        return false
-    end
-    if not PTHT_Running then return false end
-
--- In walkToTile, replace the startX/startY calculation with:
-local startX = math.round(movement.Position.X / TILE_SIZE)
-local startY = math.round(movement.Position.Y / TILE_SIZE)
-
-  -- Check start is not inside a solid block
-  if isTileBlocked(startX, startY) then
-      warn("[PTHT] Start position is inside a block")
-      return false
-  end
-
-    print("[PTHT] Walking ("..startX..","..startY..") -> ("..targetX..","..targetY..")")
-
-    if startX == targetX and startY == targetY then return true end
-
-    local path = pathCacheGet(startX, startY, targetX, targetY)
-
-    if not path then
-        print("🔍 [PTHT] Computing path...")
-        path = astar(startX, startY, targetX, targetY)
-        if not path then
-            warn(string.format("[PTHT] No path (%d,%d)->(%d,%d), rebuilding cache",
-                startX, startY, targetX, targetY))
-            invalidateTileCache()
-            pathCacheInvalidateAll()
-            task.spawn(function() prebakeCollision() end)
-            task.wait(0.5)
-            path = astar(startX, startY, targetX, targetY)
-            if not path then
-                warn("[PTHT] ❌ Still no path after rebuild")
-                return false
-            end
-        end
-        print("✅ [PTHT] Path: "..#path.." waypoints")
-        pathCachePut(startX, startY, targetX, targetY, path)
-    end
-
-    -- Walk tile by tile — re-read current tile position before each step
-    -- so any server correction is absorbed cleanly
-    local curX = startX
-    local curY = startY
-
-    for i, waypoint in ipairs(path) do
-        if not PTHT_Running or not _G.AutoPTHT then
-            movement.VelocityX = 0
-            movement.VelocityY = 0
-            return false
-        end
-
-        kickWatchdog()
-
-        -- Re-snap current position from actual movement.Position
-        -- This absorbs any server correction between steps
-        curX = math.round(movement.Position.X / TILE_SIZE)
-        curY = math.round(movement.Position.Y / TILE_SIZE)
-
-        local nextX = waypoint.x
-        local nextY = waypoint.y
-
-        -- Skip if server already moved us there
-        if curX == nextX and curY == nextY then continue end
-
-        -- If server moved us off-path, replan from here
-        if math.abs(curX - nextX) > 1 or math.abs(curY - nextY) > 1 then
-            warn("[PTHT] Position drift detected at step "..i..", replanning")
-            return walkToTile(targetX, targetY)
-        end
-
-        if not stepOneTile(curX, curY, nextX, nextY) then
-            return false
-        end
-    end
-
-    movement.VelocityX = 0
-    movement.VelocityY = 0
-    movement.Grounded  = true
-    return true
-end
-
--- ─────────────────────────────────────────────────────────────
--- WATCHDOG (moved before walkToTile so it can be called)
+-- WATCHDOG
+-- Defined BEFORE walkToTile so kickWatchdog() can be called inside it.
+-- FIX 6: This was the forward-reference crash causing the first walk to fail.
 -- ─────────────────────────────────────────────────────────────
 local _watchdogLastTick         = 0
 local _watchdogExtended         = false
 local WATCHDOG_TIMEOUT          = 15
 local WATCHDOG_TIMEOUT_EXTENDED = 50
 local _watchdogGeneration       = 0
+
+-- Forward-declare StopPTHT so watchdog can reference it
+local StopPTHT
 
 local function kickWatchdog()
     _watchdogLastTick = os.clock()
@@ -1631,6 +1487,10 @@ end
 local function setWatchdogExtended(state)
     _watchdogExtended = state
     kickWatchdog()
+end
+
+local function invalidateFarmCache()  -- forward decl used by watchdog
+    -- implemented below; placeholder here for reference
 end
 
 local function startWatchdog()
@@ -1671,7 +1531,7 @@ local function startWatchdog()
                     showNotification("Bot frozen - auto-recovered", 4)
                 else
                     warn("[YSHub] Watchdog: movement nil - stopping bot")
-                    StopPTHT()
+                    if StopPTHT then StopPTHT() end
                 end
 
                 kickWatchdog()
@@ -1680,10 +1540,88 @@ local function startWatchdog()
     end)
 end
 
+-- ─────────────────────────────────────────────────────────────
+-- LERP WALK — moves one tile at a time with smooth interpolation
+-- ─────────────────────────────────────────────────────────────
+local WALK_SPT  = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) and 0.22 or 0.16
+local CLIMB_SPT = 0.20
+
+local function smoothstep(t)
+    t = math.clamp(t, 0, 1)
+    return t * t * (3 - 2 * t)
+end
+
+local function lerp(a, b, t) return a + (b - a) * t end
+
+local function stepOneTile(fromX, fromY, toX, toY)
+    if not movement then return false end
+    if not PTHT_Running or not _G.AutoPTHT then return false end
+
+    local srcWorldX = fromX * TILE_SIZE
+    local srcWorldY = fromY * TILE_SIZE
+    local dstWorldX = toX   * TILE_SIZE
+    local dstWorldY = toY   * TILE_SIZE
+
+    -- Hard-snap to source to eliminate drift
+    movement.Position  = Vector3.new(srcWorldX, srcWorldY, 0)
+    movement.VelocityX = 0
+    movement.VelocityY = 0
+    movement.Grounded  = true
+    RunService.Heartbeat:Wait()
+
+    local isVertical = (toY ~= fromY)
+    local duration   = isVertical and CLIMB_SPT or WALK_SPT
+    local elapsed    = 0
+
+    while elapsed < duration do
+        if not PTHT_Running or not _G.AutoPTHT then
+            movement.VelocityX = 0
+            movement.VelocityY = 0
+            return false
+        end
+
+        local dt = RunService.Heartbeat:Wait()
+        elapsed  = math.min(elapsed + dt, duration)
+        local t  = smoothstep(elapsed / duration)
+
+        movement.Position = Vector3.new(
+            lerp(srcWorldX, dstWorldX, t),
+            lerp(srcWorldY, dstWorldY, t),
+            0
+        )
+
+        if isVertical then
+            local dir = toY > fromY and 1 or -1
+            movement.Grounded  = false
+            movement.VelocityY = dir * (TILE_SIZE / CLIMB_SPT)
+            movement.VelocityX = 0
+        else
+            local dir = toX > fromX and 1 or -1
+            movement.Grounded  = true
+            movement.VelocityX = dir * (TILE_SIZE / WALK_SPT)
+            movement.VelocityY = 0
+        end
+    end
+
+    -- Hard-snap to destination
+    movement.Position  = Vector3.new(dstWorldX, dstWorldY, 0)
+    movement.VelocityX = 0
+    movement.VelocityY = 0
+    movement.Grounded  = true
+    RunService.Heartbeat:Wait()
+
+    return true
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- WALK TO TILE
+-- Single authoritative definition (FIX 6: no duplicate definition).
+-- Computes or retrieves a cached A* path then steps tile-by-tile.
+-- ─────────────────────────────────────────────────────────────
 local function walkToTile(targetX, targetY)
-    if not movement then 
+    if not movement then
         warn("[PTHT] walkToTile: movement is nil")
-        return false 
+        return false
     end
     if not movement.Position then
         warn("[PTHT] walkToTile: movement.Position is nil")
@@ -1691,62 +1629,108 @@ local function walkToTile(targetX, targetY)
     end
     if not PTHT_Running then return false end
 
-        local startX = math.round(movement.Position.X / TILE_SIZE)
+    local startX = math.round(movement.Position.X / TILE_SIZE)
     local startY = math.round(movement.Position.Y / TILE_SIZE)
-
-    print("[PTHT] Walking ("..startX..","..startY..") -> ("..targetX..","..targetY..")")
 
     if startX == targetX and startY == targetY then return true end
 
+    print(string.format("[PTHT] Walking (%d,%d) → (%d,%d)", startX, startY, targetX, targetY))
+
+    -- Try cached path first
     local path = pathCacheGet(startX, startY, targetX, targetY)
 
     if not path then
-        print("🔍 [PTHT] Computing path...")
+        print("[PTHT] 🔍 Computing path...")
         path = astar(startX, startY, targetX, targetY)
+
         if not path then
-            warn(string.format("[PTHT] No path found (%d,%d)->(%d,%d), invalidating cache",
+            -- One-shot recovery: rebuild tile cache and retry once
+            warn(string.format("[PTHT] No path (%d,%d)→(%d,%d) — rebuilding collision cache",
                 startX, startY, targetX, targetY))
             invalidateTileCache()
             pathCacheInvalidateAll()
-            task.spawn(function() prebakeCollision() end)
-            task.wait(0.5)
-            path = astar(startX, startY, targetX, targetY)
+
+            -- Bake synchronously (with yield) then retry
+            local bakeOk = prebakeCollision()
+            if bakeOk then
+                path = astar(startX, startY, targetX, targetY)
+            end
+
             if not path then
-                warn("[PTHT] ❌ Still no path after cache rebuild")
+                warn("[PTHT] ❌ Still no path after cache rebuild — target may be unreachable")
                 return false
             end
         end
-        print("✅ [PTHT] Path found: "..#path.." waypoints")
+
+        print("[PTHT] ✅ Path: " .. #path .. " waypoints")
         pathCachePut(startX, startY, targetX, targetY, path)
     else
-        print("📦 [PTHT] Using cached path: "..#path.." waypoints")
+        print("[PTHT] 📦 Using cached path: " .. #path .. " waypoints")
     end
 
-        local currentX = startX
-    local currentY = startY
-    
-    for _, waypoint in ipairs(path) do
-        if not PTHT_Running or _G.AutoPTHT == false then
+    -- Execute path step-by-step, re-reading position each step
+    local curX = startX
+    local curY = startY
+
+    for i, waypoint in ipairs(path) do
+        if not PTHT_Running or not _G.AutoPTHT then
             movement.VelocityX = 0
             return false
         end
+
         kickWatchdog()
-        if not stepOneTile(currentX, currentY, waypoint.x, waypoint.y) then return false end
-        currentX = waypoint.x
-        currentY = waypoint.y
+
+        -- Absorb any server position correction
+        curX = math.round(movement.Position.X / TILE_SIZE)
+        curY = math.round(movement.Position.Y / TILE_SIZE)
+
+        local nextX = waypoint.x
+        local nextY = waypoint.y
+
+        -- Already there (server snapped us)
+        if curX == nextX and curY == nextY then continue end
+
+        -- Drift detected: replan from current real position
+        if math.abs(curX - nextX) > 2 or math.abs(curY - nextY) > 2 then
+            warn(string.format("[PTHT] Drift at step %d — replanning", i))
+            return walkToTile(targetX, targetY)
+        end
+
+        if not stepOneTile(curX, curY, nextX, nextY) then
+            return false
+        end
     end
 
-        movement.VelocityX = 0
+    movement.VelocityX = 0
     movement.Grounded  = true
     return true
 end
 
 -- ─────────────────────────────────────────────────────────────
+-- FARM CACHE
+-- ─────────────────────────────────────────────────────────────
+local _farmCache        = { emptySpots = 0, readySaplings = {}, growingSaplings = 0 }
+local _farmCacheVersion = 0
+local _farmCacheBuilt   = 0
+local SCAN_MIN_INTERVAL = 1
+local _lastBreakCycleTime = 0
+local BREAK_CYCLE_COOLDOWN = 3
+
+-- Assign to upvalue so watchdog can call it
+invalidateFarmCache = function()
+    _farmCacheVersion = _farmCacheVersion + 1
+end
+
+local function isFarmCacheValid()
+    return _farmCacheBuilt == _farmCacheVersion
+end
+
+-- ─────────────────────────────────────────────────────────────
 -- INVENTORY HELPERS
 -- ─────────────────────────────────────────────────────────────
-local _cachedUsedSlots       = 0
-local _inventoryDirty        = true
-local _lastInventoryCheck    = 0
+local _cachedUsedSlots          = 0
+local _inventoryDirty           = true
+local _lastInventoryCheck       = 0
 local INVENTORY_RECHECK_INTERVAL = 3
 
 local function markInventoryDirty() _inventoryDirty = true end
@@ -1781,7 +1765,6 @@ local function countInInventory(itemID)
     return count
 end
 
--- Periodically mark inventory dirty so countUsedSlots refreshes
 task.spawn(function()
     while Gui and Gui.Parent do
         task.wait(INVENTORY_RECHECK_INTERVAL)
@@ -1808,7 +1791,6 @@ end
 local function getSaplingsFromInventory()
     local merged = {}
     if not Inventory or not Inventory.MaxSlots then return {} end
-
     for slot = 1, Inventory.MaxSlots do
         local stack = Inventory.Stacks[slot]
         if stack and stack.Id and stack.Id:sub(-8) == "_sapling" then
@@ -1822,14 +1804,13 @@ local function getSaplingsFromInventory()
             end
         end
     end
-
     local result = {}
     for _, sap in pairs(merged) do table.insert(result, sap) end
     return result
 end
 
 -- ─────────────────────────────────────────────────────────────
--- SERVER TIME (with offset-anchored fallback)
+-- SERVER TIME
 -- ─────────────────────────────────────────────────────────────
 local _serverTimeOffset = nil
 
@@ -1845,50 +1826,27 @@ local function safeGetServerTime()
 end
 
 -- ─────────────────────────────────────────────────────────────
--- FARM CACHE
--- Caches the result of scanning the farm area for ready/growing
--- saplings and empty spots. Invalidated on any world change.
--- ─────────────────────────────────────────────────────────────
-local _farmCache        = { emptySpots = 0, readySaplings = {}, growingSaplings = 0 }
-local _farmCacheVersion = 0
-local _farmCacheBuilt   = 0
-local SCAN_MIN_INTERVAL = 1
-local _lastBreakCycleTime = 0
-local BREAK_CYCLE_COOLDOWN = 3
-
-local function invalidateFarmCache()
-    _farmCacheVersion = _farmCacheVersion + 1
-end
-
-local function isFarmCacheValid()
-    return _farmCacheBuilt == _farmCacheVersion
-end
-
--- ─────────────────────────────────────────────────────────────
 -- DROP / GEM COLLECTION
--- Scans nearby drops and gems then walks to each via walkToTile.
 -- ─────────────────────────────────────────────────────────────
 local function collectDropsAndGems(instant, centerPos, radius, skipOwnDropCheck)
     if _G.IsDropping then return 0 end
-    if not movement  then return 0 end
+    if not movement   then return 0 end
 
     movement.Grounded  = true
     movement.VelocityY = 0
 
-    -- Proximity filter helper
     local function isNearby(pos)
         if not centerPos or not radius then return true end
         return (Vector3.new(pos.X, pos.Y, 0) - centerPos).Magnitude <= radius
     end
 
-    -- Avoids re-collecting our own freshly dropped items
     local function isOwnDrop(pos)
         if skipOwnDropCheck then return false end
         local now = os.clock()
         if _G.BlockDropX and _G.BlockDropY
         and (now - _lastBlockDropTime) < DROP_ZONE_AVOID_DURATION then
-            if math.abs(pos.X - _G.BlockDropX   * TILE_SIZE) < TILE_SIZE * 6
-            and math.abs(pos.Y - _G.BlockDropY  * TILE_SIZE) < TILE_SIZE * 6 then
+            if math.abs(pos.X - _G.BlockDropX  * TILE_SIZE) < TILE_SIZE * 6
+            and math.abs(pos.Y - _G.BlockDropY * TILE_SIZE) < TILE_SIZE * 6 then
                 return true
             end
         end
@@ -1902,19 +1860,17 @@ local function collectDropsAndGems(instant, centerPos, radius, skipOwnDropCheck)
         return false
     end
 
-    -- Use cached lists to avoid GetChildren() spam
     local now = os.clock()
     if now - _lastDropScan > DROP_CACHE_INTERVAL then
-        _cachedDrops  = workspace.Drops:GetChildren()
+        _cachedDrops = workspace.Drops:GetChildren()
         local gemsFolder = workspace:FindFirstChild("Gems")
-        _cachedGems   = gemsFolder and gemsFolder:GetChildren() or {}
+        _cachedGems  = gemsFolder and gemsFolder:GetChildren() or {}
         _lastDropScan = now
     end
 
-    -- Build sorted target list (Manhattan distance, cap at 50)
-    local targets  = {}
-    local curX     = movement.Position.X
-    local curY     = movement.Position.Y
+    local targets = {}
+    local curX    = movement.Position.X
+    local curY    = movement.Position.Y
 
     for _, drop in ipairs(_cachedDrops) do
         if drop and drop.Parent and isNearby(drop.Position) and not isOwnDrop(drop.Position) then
@@ -1975,14 +1931,12 @@ local function placeBlock(x, y, blockID)
             for attempt = 1, 3 do
                 remote:FireServer(Vector2.new(x, y), slot)
                 task.wait(0.2)
-                local placed = WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)
-                if placed then
+                if WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2) then
                     tileCache[x * 10000 + y] = true
                     markInventoryDirty()
                     return true
                 end
             end
-            -- Final check after extended wait (server lag)
             task.wait(0.3)
             if WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2) then
                 tileCache[x * 10000 + y] = true
@@ -2006,21 +1960,17 @@ local function harvestSapling(x, y)
 
     for hit = 1, maxHits do
         if not PTHT_Running or not _G.AutoPTHT then return false end
-
-        -- Check if it's already gone before wasting a hit
         if not (WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)) then
             tileCache[x * 10000 + y] = false
             markInventoryDirty()
             return true
         end
-
         kickWatchdog()
         RunService.Heartbeat:Wait()
         pcall(function() remote:FireServer(pos) end)
         task.wait(delay)
     end
 
-    -- Final check
     task.wait(isMob and 0.5 or 0.3)
     if not (WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)) then
         tileCache[x * 10000 + y] = false
@@ -2028,8 +1978,7 @@ local function harvestSapling(x, y)
         return true
     end
 
-    -- Mark passable anyway so pathfinder doesn't route around ghost tiles
-    tileCache[x * 10000 + y] = false
+    tileCache[x * 10000 + y] = false  -- assume broken, avoid ghost-tile routing
     return false
 end
 
@@ -2065,15 +2014,11 @@ end
 
 -- ─────────────────────────────────────────────────────────────
 -- DROP ITEMS AT POSITION
--- Walks to drop coordinates, then fires the drop remote.
--- FIX: Single _dropLock at module scope (no shadowing).
--- FIX: pcall wrapper ensures lock always releases on error.
 -- ─────────────────────────────────────────────────────────────
 local function dropItemsAtPosition(itemID, dropX, dropY, customAmount, pressD)
-    if not dropX or not dropY     then return false end
+    if not dropX or not dropY        then return false end
     if not movement or not Inventory then return false end
 
-    -- Acquire exclusive lock with timeout
     local waited = 0
     while _dropLock do
         task.wait(0.1)
@@ -2088,7 +2033,6 @@ local function dropItemsAtPosition(itemID, dropX, dropY, customAmount, pressD)
     _dropLock     = true
     _G.IsDropping = true
 
-    -- Cleanup runs even if pcall catches an error
     local function cleanup()
         _G.IsDropping = false
         _dropLock     = false
@@ -2098,15 +2042,11 @@ local function dropItemsAtPosition(itemID, dropX, dropY, customAmount, pressD)
     end
 
     local ok, err = pcall(function()
-        -- Walk to drop tile
         if not walkToTile(dropX, dropY) then return end
 
-        -- Confirm arrival
         local ax = math.round(movement.Position.X / TILE_SIZE)
         local ay = math.round(movement.Position.Y / TILE_SIZE)
-        if ax ~= dropX or ay ~= dropY then
-            walkToTile(dropX, dropY)
-        end
+        if ax ~= dropX or ay ~= dropY then walkToTile(dropX, dropY) end
 
         movement.Grounded  = true
         movement.VelocityY = 0
@@ -2123,7 +2063,6 @@ local function dropItemsAtPosition(itemID, dropX, dropY, customAmount, pressD)
 
         if pressD == nil then pressD = true end
 
-        -- Optional D-key press for drop UI
         if pressD and _vimReliable then
             pcall(function() VIM:SendKeyEvent(true,  Enum.KeyCode.D, false, game) end)
             task.wait(0.1)
@@ -2139,15 +2078,13 @@ local function dropItemsAtPosition(itemID, dropX, dropY, customAmount, pressD)
             loops = loops + 1
             local batch = math.min(MAX_BATCH, targetDrop - dropped)
 
-            -- Find item slot
             local dropSlot = nil
             for slot = 1, Inventory.MaxSlots do
                 local stack = Inventory.Stacks[slot]
                 if stack and stack.Id == itemID then dropSlot = slot; break end
             end
-            if not dropSlot then break end  -- Item gone from inventory
+            if not dropSlot then break end
 
-            -- Fire drop remote (with one retry)
             local fireOk = pcall(function() remote:FireServer(dropSlot) end)
             if not fireOk then
                 task.wait(0.3)
@@ -2155,7 +2092,6 @@ local function dropItemsAtPosition(itemID, dropX, dropY, customAmount, pressD)
             end
             task.wait(0.4)
 
-            -- Confirm the amount prompt
             local confirmed = false
             for attempt = 1, 5 do
                 if confirmPrompt(batch) then confirmed = true; break end
@@ -2174,10 +2110,7 @@ local function dropItemsAtPosition(itemID, dropX, dropY, customAmount, pressD)
     end)
 
     cleanup()
-
-    if not ok then
-        warn("[YSHub] dropItemsAtPosition error: " .. tostring(err))
-    end
+    if not ok then warn("[YSHub] dropItemsAtPosition error: " .. tostring(err)) end
     return true
 end
 
@@ -2229,12 +2162,11 @@ local function trashItemsFromInventory(itemID, customAmount)
 end
 
 -- ─────────────────────────────────────────────────────────────
--- DO PLANT — fills empty farm tiles with saplings
+-- DO PLANT
 -- ─────────────────────────────────────────────────────────────
 local function doPlant(ctx)
     if not WorldManager or not Inventory then return end
 
-    -- Collect all empty tile positions in the farm area
     local emptyList = {}
     for x = ctx.minX, ctx.maxX do
         for y = ctx.startY, ctx.endY, 2 do
@@ -2244,7 +2176,7 @@ local function doPlant(ctx)
         end
     end
 
-    -- Boustrophedon sort (snake pattern) — minimises travel distance
+    -- Boustrophedon sort (snake pattern) to minimise travel
     table.sort(emptyList, function(a, b)
         if a.y ~= b.y then return a.y < b.y end
         local row = math.floor((a.y - ctx.startY) / 2)
@@ -2260,7 +2192,6 @@ local function doPlant(ctx)
             if walkToTile(spot.x, spot.y) then
                 plantSapling(spot.x, spot.y, ctx.saplingID)
                 task.wait(ctx.plantSpeed)
-                -- Retry once if placement didn't register
                 if not WorldManager.GetTile(spot.x, spot.y, 1) then
                     plantSapling(spot.x, spot.y, ctx.saplingID)
                     task.wait(0.1)
@@ -2273,7 +2204,7 @@ local function doPlant(ctx)
 end
 
 -- ─────────────────────────────────────────────────────────────
--- RECOVER FROM — visit a drop zone and collect items there
+-- RECOVER FROM DROP ZONE
 -- ─────────────────────────────────────────────────────────────
 local function recoverFrom(dropX, dropY)
     if not walkToTile(dropX, dropY) then return 0 end
@@ -2285,9 +2216,8 @@ local function recoverFrom(dropX, dropY)
     for _, offset in ipairs(pattern) do
         if not PTHT_Running then break end
         local tx, ty = dropX + offset[1], dropY + offset[2]
-
         if tx >= 0 and tx <= WORLD_W and ty >= 0 and ty <= WORLD_H
-        and not isTileBlocked(tx, ty) then
+        and not isSolid(tx, ty) then
             walkToTile(tx, ty)
             task.wait(0.3)
             local collected = collectDropsAndGems(
@@ -2306,12 +2236,11 @@ local function recoverFrom(dropX, dropY)
 end
 
 -- ─────────────────────────────────────────────────────────────
--- DO BREAK CYCLE — place blocks above farm, break them, collect
+-- DO BREAK CYCLE
 -- ─────────────────────────────────────────────────────────────
 local function doBreakCycle(ctx)
     local nowEntry = safeGetServerTime()
     if (nowEntry - _lastBreakCycleTime) < BREAK_CYCLE_COOLDOWN then return end
-
     if not WorldManager or not movement then return end
 
     local midX = math.floor((ctx.minX + ctx.maxX) / 2)
@@ -2323,7 +2252,6 @@ local function doBreakCycle(ctx)
 
     setWatchdogExtended(true)
 
-    -- Place two rows of blocks above the farm
     for xOff = -2, 2 do
         if not PTHT_Running or not _G.AutoPTHT then return end
         for _, py in ipairs({ ctx.endY + 1, ctx.endY + 2 }) do
@@ -2336,7 +2264,6 @@ local function doBreakCycle(ctx)
         end
     end
 
-        -- Build list of tiles to break
     local tilesToBreak = {}
     for xOff = -2, 2 do
         local px1, py1 = midX + xOff, ctx.endY + 1
@@ -2349,7 +2276,6 @@ local function doBreakCycle(ctx)
         end
     end
 
-    -- Mark break zone tiles as passable so pathfinder can reach them
     for _, tile in ipairs(tilesToBreak) do
         tileCache[tile.x * 10000 + tile.y] = false
     end
@@ -2360,7 +2286,6 @@ local function doBreakCycle(ctx)
         return
     end
 
-    -- Break all tiles with attempt cap
     local broken      = {}
     local attempts    = {}
     local MAX_ATTEMPTS = 8
@@ -2400,8 +2325,8 @@ local function doBreakCycle(ctx)
                 continue
             end
 
-            allDone = false
-            attempts[k] = attempts[k] + 1
+            allDone      = false
+            attempts[k]  = attempts[k] + 1
             harvestSapling(tile.x, tile.y)
 
             local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
@@ -2410,12 +2335,9 @@ local function doBreakCycle(ctx)
     end
 
     _lastBreakCycleTime = safeGetServerTime()
-    
-    -- Rebuild tile cache after breaking to reflect new state
     invalidateTileCache()
     invalidateFarmCache()
 
-    -- Collect drops near break site
     local bCount = 0
     for _ in pairs(broken) do bCount = bCount + 1 end
     task.wait(0.3 + bCount * 0.05)
@@ -2431,12 +2353,11 @@ end
 -- ─────────────────────────────────────────────────────────────
 -- STOP BOT
 -- ─────────────────────────────────────────────────────────────
-local function StopPTHT()
+StopPTHT = function()
     PTHT_Running  = false
     _G.AutoPTHT   = false
     _G.IsDropping = false
 
-    -- Close any open UI prompts
     local managers = game.ReplicatedStorage:FindFirstChild("Managers")
     if managers then
         local uiManager = managers:FindFirstChild("UIManager")
@@ -2460,12 +2381,11 @@ end
 local function StartPTHT()
     if PTHT_Running then return end
 
-                print("\n🚀 [PTHT] Starting bot...")
-    print("📦 [PTHT] Checking modules...")
-    print("   WorldManager: ", WorldManager and "✓" or "✗")
-    print("   ItemsManager: ", ItemsManager and "✓" or "✗")
-    print("   Inventory: ", Inventory and "✓" or "✗")
-    print("   movement: ", movement and "✓" or "✗")
+    print("\n🚀 [PTHT] Starting bot...")
+    print("   WorldManager:", WorldManager and "✓" or "✗")
+    print("   ItemsManager:", ItemsManager and "✓" or "✗")
+    print("   Inventory:",    Inventory    and "✓" or "✗")
+    print("   movement:",     movement     and "✓" or "✗")
 
     if not WorldManager or not ItemsManager or not Inventory or not movement then
         showNotification("⚠️ Modules not loaded yet. Wait and retry.", 5)
@@ -2473,28 +2393,23 @@ local function StartPTHT()
         return
     end
 
-    print("📍 [PTHT] Farm area: ("..tostring(_G.MinX or 0)..","..tostring(_G.StartY or 0)..") -> ("..tostring(_G.MaxX or 50)..","..tostring(_G.EndY or 20)..")")
-    print("🌱 [PTHT] Sapling: "..tostring(_G.SelectedSaplingName or "none"))
-    print("🧱 [PTHT] Block: "..tostring(_G.SelectedBlockName or "none"))
-
     PTHT_Running = true
     invalidateFarmCache()
 
     task.spawn(function()
-                        -- Bake collision on start; retry up to 3 times if it comes back empty
         print("🔧 [PTHT] Building collision cache...")
         local bakeOk = false
         for attempt = 1, 3 do
             bakeOk = prebakeCollision()
-            if bakeOk then 
-                print("✅ [PTHT] Collision cache built successfully")
-                break 
+            if bakeOk then
+                print("✅ [PTHT] Collision cache built")
+                break
             end
             warn("[YSHub] Bake attempt "..attempt.." returned empty, retrying in 1s")
             task.wait(1)
         end
         if not bakeOk then
-            warn("[YSHub] ❌ Collision bake failed after 3 attempts — bot may path through walls")
+            warn("[YSHub] ❌ Collision bake failed — bot may path incorrectly")
         end
 
         kickWatchdog()
@@ -2517,7 +2432,6 @@ local function StartPTHT()
             local startY = _G.StartY or 0
             local endY   = _G.EndY   or 20
 
-            -- Speed settings (slider 1–100, higher = faster)
             local plantSpeed   = (101 - (_G.PlantSpeed   or 50)) / 100
             local harvestSpeed = (101 - (_G.HarvestSpeed or 50)) / 100
             local breakSpeed   = (101 - (_G.BreakSpeed   or 50)) / 200
@@ -2534,7 +2448,6 @@ local function StartPTHT()
             local farmRows     = math.floor((endY - startY) / 2) + 1
             local totalCapacity = farmWidth * farmRows
 
-            -- Re-scan farm state if cache is stale
             local now = safeGetServerTime()
             if not isFarmCacheValid() or (now - _lastScanTime) >= SCAN_MIN_INTERVAL then
                 local scanVersion   = _farmCacheVersion
@@ -2565,7 +2478,6 @@ local function StartPTHT()
                     end
                 end
 
-                -- Only commit scan if cache wasn't invalidated under us
                 if scanVersion == _farmCacheVersion then
                     _farmCache      = { emptySpots = emptySpots, readySaplings = readySaplings, growingSaplings = growingSap }
                     _farmCacheBuilt = _farmCacheVersion
@@ -2579,7 +2491,6 @@ local function StartPTHT()
             local readySaplings   = _farmCache.readySaplings
             local growingSaplings = _farmCache.growingSaplings
 
-            -- Auto-drop blocks when inventory full
             if _G.AutoDropBlocks and countUsedSlots() >= Inventory.MaxSlots - 2
             and _G.BlockDropX and _G.BlockDropY then
                 dropItemsAtPosition(blockID, _G.BlockDropX, _G.BlockDropY, math.floor(blocks / 2), false)
@@ -2587,7 +2498,6 @@ local function StartPTHT()
                 blocks = countInInventory(blockID)
             end
 
-            -- Auto-drop excess saplings
             if _G.AutoDropSaplings and seeds > totalCapacity + 200
             and _G.SaplingDropX and _G.SaplingDropY then
                 dropItemsAtPosition(saplingID, _G.SaplingDropX, _G.SaplingDropY, seeds - totalCapacity, false)
@@ -2595,7 +2505,6 @@ local function StartPTHT()
                 seeds = countInInventory(saplingID)
             end
 
-            -- ── Priority: Harvest ready saplings ──────────────
             if #readySaplings > 0 then
                 table.sort(readySaplings, function(a, b)
                     return a.y == b.y and a.x < b.x or a.y < b.y
@@ -2610,7 +2519,6 @@ local function StartPTHT()
                         continue
                     end
 
-                    -- Mid-harvest drop if inventory full
                     if countUsedSlots() >= Inventory.MaxSlots - 3
                     and _G.BlockDropX and _G.BlockDropY then
                         blocks = countInInventory(blockID)
@@ -2629,20 +2537,16 @@ local function StartPTHT()
                     end
                 end
 
-                -- Collect drops in farm area after harvest pass
                 local cx = ((minX + maxX) / 2) * TILE_SIZE
                 local cy = ((startY + endY) / 2) * TILE_SIZE
                 local cr = math.max((maxX-minX+1), (endY-startY+1)) * TILE_SIZE / 2 + TILE_SIZE * 3
                 collectDropsAndGems(false, Vector3.new(cx, cy, 0), cr)
-
                 seeds = countInInventory(saplingID)
                 invalidateFarmCache()
 
-            -- ── Plant if there are empty spots and enough seeds ──
             elseif emptySpots > 0 and seeds >= totalCapacity then
                 doPlant(ctx)
 
-            -- ── Break cycle if we have blocks but empty spots ────
             elseif emptySpots > 0 and blocks > 0 then
                 local cooldownLeft = BREAK_CYCLE_COOLDOWN - (safeGetServerTime() - _lastBreakCycleTime)
                 if cooldownLeft <= 0 then
@@ -2656,12 +2560,10 @@ local function StartPTHT()
                     task.wait(math.min(cooldownLeft, 0.2) + 0.05)
                 end
 
-            -- ── All growing, wait ────────────────────────────────
             elseif emptySpots == 0 and growingSaplings > 0 then
                 task.wait(3)
                 invalidateFarmCache()
 
-            -- ── Nothing to do, try to recover from drop zones ────
             else
                 local recoveredBlocks = 0
                 if _G.BlockDropX and _G.BlockDropY then
@@ -4564,4 +4466,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YS YS YS YS YS YS")
+print("YSss")
