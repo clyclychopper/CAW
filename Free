@@ -1103,73 +1103,77 @@
 
 
     -- OPTIMIZED: Tile-by-tile smooth movement (AC safe, no pathfinding lag)
-    local function walkToTile(gx, gy)
-        if not movement then return false end
+local function walkToTile(gx, gy)
+    if not movement then return false end
+    if not PTHT_Running then return false end
+    
+    local sx = math.round(movement.Position.X / TILE_SIZE)
+    local sy = math.round(movement.Position.Y / TILE_SIZE)
+    if sx == gx and sy == gy then return true end
+    
+    -- Simple path: move horizontally first, then vertically (no BFS needed)
+    local path = {}
+    
+    -- Horizontal movement
+    if gx ~= sx then
+        local dx = gx > sx and 1 or -1
+        for x = sx + dx, gx, dx do
+            table.insert(path, {x = x, y = sy})
+        end
+    end
+    
+    -- Vertical movement
+    if gy ~= sy then
+        local dy = gy > sy and 1 or -1
+        for y = sy + dy, gy, dy do
+            table.insert(path, {x = gx, y = y})
+        end
+    end
+    
+    -- Smooth interpolation settings
+    local stepsPerTile = isMobileExecutor and 6 or 8
+    local delayPerStep = isMobileExecutor and 0.025 or 0.02
+    
+    -- Move tile-by-tile with smooth interpolation
+    for i, tile in ipairs(path) do
         if not PTHT_Running then return false end
         
-        local sx = math.round(movement.Position.X / TILE_SIZE)
-        local sy = math.round(movement.Position.Y / TILE_SIZE)
-        if sx == gx and sy == gy then return true end
+        if i % 5 == 0 then kickWatchdog() end
         
-        -- Simple path: move horizontally first, then vertically (no BFS needed)
-        local path = {}
+        local startX = movement.Position.X
+        local startY = movement.Position.Y
+        local targetX = tile.x * TILE_SIZE
+        local targetY = tile.y * TILE_SIZE
         
-        -- Horizontal movement
-        if gx ~= sx then
-            local dx = gx > sx and 1 or -1
-            for x = sx + dx, gx, dx do
-                table.insert(path, {x = x, y = sy})
-            end
-        end
-        
-        -- Vertical movement
-        if gy ~= sy then
-            local dy = gy > sy and 1 or -1
-            for y = sy + dy, gy, dy do
-                table.insert(path, {x = gx, y = y})
-            end
-        end
-        
-        -- Smooth interpolation settings
-        local stepsPerTile = isMobileExecutor and 8 or 10
-        local delayPerStep = isMobileExecutor and 0.02 or 0.015
-        
-        -- Move tile-by-tile with smooth interpolation
-        for i, tile in ipairs(path) do
+        -- Smooth interpolation to next tile
+        for step = 1, stepsPerTile do
             if not PTHT_Running then return false end
             
-            if i % 5 == 0 then kickWatchdog() end
+            local alpha = step / stepsPerTile
+            local interpX = startX + (targetX - startX) * alpha
+            local interpY = startY + (targetY - startY) * alpha
             
-            local startPos = movement.Position
-            local targetPos = Vector3.new(tile.x * TILE_SIZE, tile.y * TILE_SIZE, 0)
+            movement.Position = Vector3.new(interpX, interpY, 0)
+            movement.Grounded = true
+            movement.VelocityX = 0
+            movement.VelocityY = 0
             
-            -- Smooth interpolation to next tile
-            for step = 1, stepsPerTile do
-                if not PTHT_Running then return false end
-                
-                local alpha = step / stepsPerTile
-                local interpPos = startPos:Lerp(targetPos, alpha)
-                
-                movement.Position = interpPos
-                movement.Grounded = true
-                movement.VelocityX = 0
-                movement.VelocityY = 0
-                
-                task.wait(delayPerStep)
-            end
-            
-            -- Lock to exact tile position
-            movement.Position = targetPos
+            RunService.Heartbeat:Wait()
         end
         
-        -- Final position lock
-        movement.Position = Vector3.new(gx * TILE_SIZE, gy * TILE_SIZE, 0)
+        -- Lock to exact tile position
+        movement.Position = Vector3.new(targetX, targetY, 0)
         movement.Grounded = true
-        movement.VelocityX = 0
-        movement.VelocityY = 0
-        
-        return true
     end
+    
+    -- Final position lock
+    movement.Position = Vector3.new(gx * TILE_SIZE, gy * TILE_SIZE, 0)
+    movement.Grounded = true
+    movement.VelocityX = 0
+    movement.VelocityY = 0
+    
+    return true
+end
 
     local function stopWalking()
         _stopWalk = true
@@ -4080,4 +4084,4 @@
         end
         tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
     end)
-    print("YS YS YS YS YS YS")
+    print("cccS YS")
