@@ -2380,15 +2380,13 @@ local function prebakeCollision()
                         end
                     end
                     
-                                        -- Sort drops in zigzag row pattern for continuous collection
+                                                            -- Sort drops row-by-row, always left-to-right
                     if #dropPositions > 0 then
-                        local farmWidth = maxX - minX
                         for _, pos in ipairs(dropPositions) do
                             local row = pos.y - startY
                             local col = pos.x - minX
-                            -- Zigzag: even rows left-to-right, odd rows right-to-left
-                            local sortX = (row % 2 == 0) and col or (farmWidth - col)
-                            pos.sortKey = row * 10000 + sortX
+                            -- Always left-to-right: row first, then column
+                            pos.sortKey = row * 10000 + col
                         end
                         table.sort(dropPositions, function(a, b)
                             return a.sortKey < b.sortKey
@@ -2992,8 +2990,16 @@ local function prebakeCollision()
     local COL_EMPTY   = Color3.fromRGB(12,   28,  36)
     local _mmBuilding = false
 
-    local function updateMinimap()
+        local _lastMinimapUpdate = 0
+    local MINIMAP_UPDATE_COOLDOWN = 3
+    
+    local function updateMinimap(forceUpdate)
         if _mmBuilding then return end
+        if not forceUpdate then
+            local now = os.clock()
+            if (now - _lastMinimapUpdate) < MINIMAP_UPDATE_COOLDOWN then return end
+            _lastMinimapUpdate = now
+        end
         _mmBuilding = true
         task.spawn(function()
             local minX   = _G.MinX
@@ -3016,8 +3022,10 @@ local function prebakeCollision()
             local mapH  = 220 - PAD * 2 - 22
             if mapW <= 0 or mapH <= 0 then _mmBuilding = false; return end
 
-            local cellSz = math.max(2, math.min(math.floor(mapW/farmW), math.floor(mapH/farmH)))
-            local gap     = math.max(0, math.floor(cellSz * 0.1))
+                        -- Mobile-friendly: larger minimum cell size, less tiles
+            local minCellSize = isMobile and 4 or 2
+            local cellSz = math.max(minCellSize, math.min(math.floor(mapW/farmW), math.floor(mapH/farmH)))
+            local gap = 0
             local totalW  = farmW * cellSz
             local totalH  = farmH * cellSz
             local offX    = PAD + math.floor((mapW - totalW) / 2)
@@ -3029,12 +3037,18 @@ local function prebakeCollision()
             for _, t in ipairs(mmActiveTiles) do releaseTile(t) end
             mmActiveTiles = {}
 
-            local now   = safeGetServerTime()
-            local CHUNK = 8
+                        local now = safeGetServerTime()
+            local CHUNK = isMobile and 4 or 8
+            local maxTiles = isMobile and 300 or 600
+            local tilesCreated = 0
 
-            for gx = 0, farmW - 1 do
+            -- Sample tiles for mobile (skip some for performance)
+            local sampleRate = (farmW * farmH > maxTiles) and 2 or 1
+            
+            for gx = 0, farmW - 1, sampleRate do
                 local wx = minX + gx
-                for gy = 0, farmH - 1 do
+                for gy = 0, farmH - 1, sampleRate do
+                    if tilesCreated >= maxTiles then break end
                     local wy = startY + gy
                     local tileId, tileData = WorldManager and WorldManager.GetTile(wx, wy, 1)
                     local col
@@ -3053,12 +3067,13 @@ local function prebakeCollision()
                         col = COL_EMPTY
                     end
                     local t = acquireTile()
-                    local sz = math.max(1, cellSz - gap * 2)
+                    local sz = math.max(1, cellSz)
                     t.Size             = UDim2.new(0, sz, 0, sz)
-                    t.Position         = UDim2.new(0, gx*cellSz+gap, 0, (farmH-1-gy)*cellSz+gap)
+                    t.Position         = UDim2.new(0, (gx/sampleRate)*cellSz, 0, (farmH-1-gy/sampleRate)*cellSz)
                     t.BackgroundColor3 = col
                     t.BackgroundTransparency = (col == COL_EMPTY) and 0.55 or 0
                     table.insert(mmActiveTiles, t)
+                    tilesCreated = tilesCreated + 1
                 end
                 if gx % CHUNK == (CHUNK - 1) then task.wait() end
             end
@@ -3252,10 +3267,18 @@ local function prebakeCollision()
         end
     end)
 
+        local _worldTabFirstOpen = false
     task.spawn(function()
         while Gui and Gui.Parent do
-            if tabPages[2].Visible then updateMinimap() end
-            task.wait(8)
+            if tabPages[2].Visible then
+                if not _worldTabFirstOpen then
+                    _worldTabFirstOpen = true
+                    updateMinimap(true)
+                else
+                    updateMinimap(false)
+                end
+            end
+            task.wait(isMobile and 10 or 8)
         end
     end)
 
@@ -4333,3 +4356,4 @@ local function prebakeCollision()
         end
         tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
     end)
+print("YS Hub")
