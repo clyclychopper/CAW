@@ -970,7 +970,7 @@ local Hub = _G.YSHub
 Hub.TILE_SIZE       = 4.5
 Hub.WORLD_W         = 120
 Hub.WORLD_H         = 70
-Hub.MOVE_DELAY      = 0.1
+Hub.MOVE_DELAY      = 0.2
 Hub.ASTAR_MAX_NODES = 25000
 Hub.MAX_JUMP        = 3
 Hub.MAX_FALL        = 20
@@ -3841,4 +3841,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YS ss")
+print("YS YS YS YS YS YS")
