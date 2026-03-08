@@ -1605,14 +1605,25 @@ local function walkToTile(targetX, targetY)
             return walkToTile(targetX, targetY)
         end
 
-                if not stepOneTile(curX, curY, nextX, nextY) then
+                        if not stepOneTile(curX, curY, nextX, nextY) then
             warn("[PTHT] Failed step "..i.."/"..#path)
             return false
         end
         
         -- CRITICAL: Wait after EACH tile so movement is SMOOTH and SEQUENTIAL
-        -- This prevents the bot from looking like it's flying/teleporting
-        task.wait(0.2)
+        task.wait(0.15)
+        
+        -- VALIDATE: Check if we actually reached the target tile
+        local actualX = math.round(movement.Position.X / TILE_SIZE)
+        local actualY = math.round(movement.Position.Y / TILE_SIZE)
+        
+        -- If we drifted even 1 tile, recalculate path from current position
+        if actualX ~= nextX or actualY ~= nextY then
+            warn(string.format("[PTHT] Drift detected: expected (%d,%d) but at (%d,%d) - recalculating",
+                nextX, nextY, actualX, actualY))
+            -- Recalculate from where we actually are
+            return walkToTile(targetX, targetY)
+        end
     end
 
     movement.VelocityX = 0
@@ -4381,4 +4392,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YShub")
+print("YS YS YS YS YS YS")
