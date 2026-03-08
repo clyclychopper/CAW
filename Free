@@ -1310,14 +1310,6 @@ end
 -- Old complex jump/fall logic removed - caused pathfinder to route through uncached tiles
 -- The simplified version ensures every path step is exactly 1 tile
 -- stepOneTile handles the physics (tweening) for each single-tile move
-local function _unused_old_getNeighbours_for_reference(x, y)
-    -- This was the old implementation with multi-tile jumps/falls
-    -- Removed because it caused A* to generate paths crossing uncached regions
-        end
-    end
-
-    return result
-end
 
 -- ─────────────────────────────────────────────────────────────
 -- A* PATHFINDER
@@ -4382,4 +4374,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YYYY")
+print("YS")
