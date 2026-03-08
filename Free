@@ -971,7 +971,7 @@ Hub.TILE_SIZE       = 4.5
 Hub.WORLD_W         = 120
 Hub.WORLD_H         = 70
 Hub.MOVE_DELAY      = 0.2
-Hub.ASTAR_MAX_NODES = 25000
+Hub.ASTAR_MAX_NODES = 50000
 Hub.MAX_JUMP        = 3
 Hub.MAX_FALL        = 20
 Hub.getGrowTime = getGrowTime
@@ -1018,6 +1018,10 @@ local DROP_CACHE_INTERVAL = 0.5
 local WALK_SPT  = 0.14
 local CLIMB_SPT = 0.20
 local _stopWalk = false
+
+-- Mobile-optimized movement delays
+local MOVE_DELAY_PC     = 0.2
+local MOVE_DELAY_MOBILE = 0.3
 
 local function isSolid(x, y)
     if x < 0 or y < 0 or x > WORLD_W or y > WORLD_H then return true end
@@ -1096,43 +1100,7 @@ local function findPath(sx, sy, gx, gy)
     return nil
 end
 
-local function stepTile(fx, fy, tx, ty)
-    if not movement then return false end
-    local srcW   = Vector3.new(fx * TILE_SIZE, fy * TILE_SIZE, 0)
-    local dstW   = Vector3.new(tx * TILE_SIZE, ty * TILE_SIZE, 0)
-    local isVert = (ty ~= fy)
-    local dur    = isVert and CLIMB_SPT or WALK_SPT
-    local elapsed = 0
-    movement.Position  = srcW
-    movement.VelocityX = 0
-    movement.VelocityY = 0
-    movement.Grounded  = true
-    RunService.Heartbeat:Wait()
-    while elapsed < dur do
-        if _stopWalk then
-            movement.VelocityX = 0; movement.VelocityY = 0
-            return false
-        end
-        local dt = RunService.Heartbeat:Wait()
-        elapsed = math.min(elapsed + dt, dur)
-        movement.Position = srcW:Lerp(dstW, elapsed / dur)
-        if isVert then
-            movement.VelocityY = (ty > fy and 1 or -1) * (TILE_SIZE / CLIMB_SPT)
-            movement.VelocityX = 0
-            movement.Grounded  = false
-        else
-            movement.VelocityX = (tx > fx and 1 or -1) * (TILE_SIZE / WALK_SPT)
-            movement.VelocityY = 0
-            movement.Grounded  = true
-        end
-    end
-    movement.Position  = dstW
-    movement.VelocityX = 0
-    movement.VelocityY = 0
-    movement.Grounded  = true
-    RunService.Heartbeat:Wait()
-    return true
-end
+
 
 local function walkToTile(gx, gy)
     if not movement then return false end
@@ -1146,11 +1114,15 @@ local function walkToTile(gx, gy)
         return false
     end
 
+    -- Mobile: kick watchdog every tile | PC: every 10 tiles
+    local watchdogInterval = isMobileExecutor and 1 or 10
+    local moveDelay = isMobileExecutor and MOVE_DELAY_MOBILE or MOVE_DELAY_PC
+
     for i, tile in ipairs(path) do
         if not PTHT_Running then return false end
 
-        -- Kick watchdog every 10 tiles
-        if i % 10 == 0 then
+        -- Kick watchdog based on platform
+        if i % watchdogInterval == 0 then
             kickWatchdog()
         end
 
@@ -1165,8 +1137,8 @@ local function walkToTile(gx, gy)
         movement.VelocityY = 0
         movement.VelocityX = 0
         movement.Grounded  = true
-        -- Small yield to prevent frame-skipping and allow server to process
-        RunService.Heartbeat:Wait()
+        -- Use task.wait() instead of Heartbeat for mobile reliability
+        task.wait(moveDelay)
     end
     return true
 end
