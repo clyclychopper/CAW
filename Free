@@ -1081,409 +1081,356 @@ end
   -- FIX 1: Renamed from isTileBlocked → isSolid (used everywhere consistently)
   -- A tile is solid if it's in tileCache as true OR out of bounds.
   -- CRITICAL: Uncached tiles (nil) default to SOLID - never clip through unknowns
-  local function isSolid(x, y)
-      if x < 0 or x > WORLD_W or y < 0 or y > WORLD_H then
-          return true
-      end
-      local cached = tileCache[x * 10000 + y]
-      if cached == nil then return true end  -- Uncached = assume solid (safe fallback)
-      return cached == true
-  end
+  -- ═══════════════════════════════════════════════════════════════
+-- SMOOTH TILE PATHFINDER — Standalone Movement Module
+-- Drop this inside your existing PTHT do...end block or use standalone.
+-- Requires: movement, WorldManager, RunService, TweenService
+-- ═══════════════════════════════════════════════════════════════
+
+local TweenService     = game:GetService("TweenService")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+-- ─────────────────────────────────────────────────────────────
+-- CONFIG  (all tunable at runtime via _G.*)
+-- ─────────────────────────────────────────────────────────────
+local CFG = {
+    TILE_SIZE        = 4.5,      -- World units per tile
+    WALK_SPT         = 0.14,     -- Seconds per horizontal tile  (lower = faster)
+    CLIMB_SPT        = 0.20,     -- Seconds per vertical tile
+    POST_STEP_WAIT   = 0.08,     -- Brief pause after each step (smooths server lag)
+    DRIFT_THRESHOLD  = 2,        -- Tiles of drift before full replan
+    MAX_REPLAN       = 5,        -- Max consecutive replans before giving up
+    MAX_PATH_NODES   = 3000,     -- A* node budget
+    VALIDATE_AHEAD   = true,     -- Pre-validate next tile before stepping
+    DEBUG            = false,    -- Print step-by-step info
+}
+
+-- Allow runtime overrides from _G
+local function syncCFG()
+    if _G.WalkSpeed   then CFG.WALK_SPT   = (101 - _G.WalkSpeed)  / 100 end
+    if _G.ClimbSpeed  then CFG.CLIMB_SPT  = (101 - _G.ClimbSpeed) / 100 end
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- STATE
+-- ─────────────────────────────────────────────────────────────
+local State = {
+    running      = false,   -- Is the bot active?
+    interrupted  = false,   -- Request mid-path stop
+    replanCount  = 0,       -- Consecutive replans
+    currentPath  = nil,     -- Active path table
+    currentStep  = 0,       -- Which step we're on
+    activeTween  = nil,     -- Currently playing Tween object
+}
+
+-- ─────────────────────────────────────────────────────────────
+-- MODULE REFERENCES  (injected externally or via _G)
+-- ─────────────────────────────────────────────────────────────
+local movement     = nil   -- PlayerMovement module
+local WorldManager = nil   -- WorldManager module
+
+local function injectModules(mv, wm)
+    movement     = mv
+    WorldManager = wm
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- TILE CACHE  (shared with caller if you pass one in)
+-- ─────────────────────────────────────────────────────────────
+local tileCache = {}  -- [x*10000+y] = true(solid) / false(passable)
+
+local function setTileCache(cache)
+    tileCache = cache  -- let caller share their cache
+end
+
+local function isSolid(x, y)
+    if x < 0 or x > 200 or y < 0 or y > 200 then return true end
+    local v = tileCache[x * 10000 + y]
+    return v == nil or v == true  -- nil = uncached = assume solid (safe)
+end
 
 local function isAir(x, y)
     return not isSolid(x, y)
 end
 
--- REMOVED canStandAt entirely. Any air tile is a valid position.
-local function canMoveTo(x, y)
-    return isAir(x, y)
+-- ─────────────────────────────────────────────────────────────
+-- MODULE 1 — POSITION UTILITIES
+-- Converts between world Vector3 and tile grid coordinates.
+-- ─────────────────────────────────────────────────────────────
+local PosUtil = {}
+
+function PosUtil.worldToTile(worldPos)
+    return
+        math.round(worldPos.X / CFG.TILE_SIZE),
+        math.round(worldPos.Y / CFG.TILE_SIZE)
 end
 
--- FIX 2: canStandAt no longer requires y-1 to be in the cache as solid.
--- Instead it checks: body tile is air AND either ground is solid OR y==0 (floor).
--- This prevents start/goal nodes from being rejected due to cache misses.
-local function canStandAt(x, y)
-    if not isAir(x, y) then return false end        -- body blocked
-    if not isAir(x, y + 1) then return false end    -- head blocked
-    -- ground = solid tile below feet, OR at world floor (y==0)
-    return y == 0 or isSolid(x, y - 1)
+function PosUtil.tileToWorld(tx, ty)
+    return Vector3.new(tx * CFG.TILE_SIZE, ty * CFG.TILE_SIZE, 0)
+end
+
+function PosUtil.currentTile()
+    if not movement or not movement.Position then return 0, 0 end
+    return PosUtil.worldToTile(movement.Position)
+end
+
+function PosUtil.distTiles(ax, ay, bx, by)
+    return math.abs(ax - bx) + math.abs(ay - by)  -- Manhattan
 end
 
 -- ─────────────────────────────────────────────────────────────
--- COLLISION BAKE
--- Reads WorldManager tile data and writes solid/passable into tileCache.
--- FIX 3: Now checks BOTH layer 1 and layer 2 for solid tiles, so background
--- blocks that block movement are correctly marked as solid.
+-- MODULE 2 — PATH VALIDATOR
+-- Checks each waypoint in a path before / during execution.
+-- Returns: isValid (bool), firstBadIndex (int or nil)
 -- ─────────────────────────────────────────────────────────────
-local function prebakeCollision()
-    if not WorldManager or not ItemsManager then
-        warn("[YSHub] prebakeCollision: modules not ready, skipping")
-        return false
-    end
+local PathValidator = {}
 
-    invalidateTileCache()
-
-    local x0 = math.max(0,       (_G.MinX   or 0)  - 10)
-    local x1 = math.min(WORLD_W, (_G.MaxX   or 50) + 10)
-    local y0 = math.max(0,       (_G.StartY or 0)  - 10)
-    local y1 = math.min(WORLD_H, (_G.EndY   or 20) + 10)
-
-    -- Pass 1: collect unique tile IDs not yet in itemDataCache
-    local uniqueIds = {}
-    for x = x0, x1 do
-        if not PTHT_Running then return false end
-        for y = y0, y1 do
-            for _, layer in ipairs({1, 2}) do
-                local tileId = WorldManager.GetTile(x, y, layer)
-                if tileId and not isSapling(tileId) and not itemDataCache[tileId] then
-                    uniqueIds[tileId] = true
-                end
+-- Validate a single tile: must be air (not solid).
+function PathValidator.isTilePassable(x, y)
+    if isSolid(x, y) then return false end
+    -- Also check live WorldManager if available (tiles can change mid-run)
+    if WorldManager then
+        local tileId = WorldManager.GetTile(x, y, 1)
+        if tileId then
+            -- If it's a sapling it's passable; otherwise treat as solid
+            if type(tileId) == "string" and tileId:sub(-8) ~= "_sapling" then
+                tileCache[x * 10000 + y] = true  -- update cache
+                return false
             end
         end
-        if x % 10 == 0 then task.wait() end
     end
-
-    -- Pass 2: bulk-request item data for all unseen tile IDs
-    for tileId in pairs(uniqueIds) do
-        if not PTHT_Running then return false end
-        local ok, data = pcall(function() return ItemsManager.RequestItemData(tileId) end)
-        if ok and data then itemDataCache[tileId] = data end
-    end
-
-    -- Pass 3: write collision booleans.
-    -- A tile is solid if layer 1 OR layer 2 has a non-sapling, collidable block.
-    local tileCount   = 0
-    local blockedCount = 0
-
-    for x = x0, x1 do
-        if not PTHT_Running then return false end
-        for y = y0, y1 do
-            local key = x * 10000 + y
-            local solid = false
-
-            for _, layer in ipairs({1, 2}) do
-                local tileId = WorldManager.GetTile(x, y, layer)
-                if tileId then
-                    if isSapling(tileId) then
-                        -- saplings are always passable, skip
-                    else
-                        local data = itemDataCache[tileId]
-                        -- default to solid if data missing (safe fallback)
-                        if data == nil or (data.Tile and (data.Tile.Collision or 1) >= 1) then
-                            solid = true
-                            break  -- no need to check layer 2 if layer 1 is solid
-                        end
-                    end
-                end
-            end
-
-            tileCache[key] = solid
-            tileCount = tileCount + 1
-            if solid then blockedCount = blockedCount + 1 end
-        end
-        if x % 5 == 0 then task.wait() end
-    end
-
-    print(string.format("[YSHub] Collision bake: %d tiles, %d blocked, %d passable",
-        tileCount, blockedCount, tileCount - blockedCount))
-
-    return tileCount > 0
+    return true
 end
 
--- ─────────────────────────────────────────────────────────────
--- A* PATH CACHE
--- ─────────────────────────────────────────────────────────────
-local _pathCache      = {}
-local _pathCacheOrder = {}
-local _pathCacheSize  = 0
-local PATH_CACHE_MAX  = 200
-
-local function _pathKey(sx, sy, gx, gy)
-    return sx .. ":" .. sy .. ":" .. gx .. ":" .. gy
-end
-
-local function pathCacheGet(sx, sy, gx, gy)
-    local entry = _pathCache[_pathKey(sx, sy, gx, gy)]
-    if not entry then return nil end
-    if entry.tileVersion ~= tileCacheVersion then
-        _pathCache[_pathKey(sx, sy, gx, gy)] = nil
-        _pathCacheSize = math.max(0, _pathCacheSize - 1)
-        return nil
-    end
-    return entry.path
-end
-
-local function pathCachePut(sx, sy, gx, gy, path)
-    local key = _pathKey(sx, sy, gx, gy)
-    if _pathCache[key] then
-        _pathCache[key] = { path = path, tileVersion = tileCacheVersion }
-        return
-    end
-    while _pathCacheSize >= PATH_CACHE_MAX do
-        local oldKey = table.remove(_pathCacheOrder, 1)
-        if oldKey and _pathCache[oldKey] then
-            _pathCache[oldKey] = nil
-            _pathCacheSize = _pathCacheSize - 1
+-- Scan the whole path and return the index of the first blocked tile.
+function PathValidator.findFirstBlockedStep(path, startIdx)
+    startIdx = startIdx or 1
+    for i = startIdx, #path do
+        local wp = path[i]
+        if not PathValidator.isTilePassable(wp.x, wp.y) then
+            return i
         end
     end
-    _pathCache[key] = { path = path, tileVersion = tileCacheVersion }
-    table.insert(_pathCacheOrder, key)
-    _pathCacheSize = _pathCacheSize + 1
+    return nil  -- all clear
 end
 
-local function pathCacheInvalidateAll()
-    _pathCache      = {}
-    _pathCacheOrder = {}
-    _pathCacheSize  = 0
+-- Quick check: is the very next waypoint still valid?
+function PathValidator.nextStepOk(path, stepIdx)
+    local wp = path[stepIdx]
+    if not wp then return false end
+    return PathValidator.isTilePassable(wp.x, wp.y)
 end
 
 -- ─────────────────────────────────────────────────────────────
--- BINARY MIN-HEAP PRIORITY QUEUE (on .f score)
+-- MODULE 3 — A* PATHFINDER
+-- Binary min-heap priority queue + 4-directional grid search.
+-- Returns an ordered list of {x, y} waypoints, or nil on failure.
 -- ─────────────────────────────────────────────────────────────
-local _pqData = {}
-local _pqSize = 0
+local AStar = {}
 
-local function pqPush(node)
-    _pqSize = _pqSize + 1
-    _pqData[_pqSize] = node
-    local i = _pqSize
+-- ── Min-heap ─────────────────────────────────────────────────
+local _heap, _heapSz = {}, 0
+
+local function heapPush(node)
+    _heapSz = _heapSz + 1
+    _heap[_heapSz] = node
+    local i = _heapSz
     while i > 1 do
         local p = math.floor(i / 2)
-        if _pqData[p].f <= _pqData[i].f then break end
-        _pqData[p], _pqData[i] = _pqData[i], _pqData[p]
+        if _heap[p].f <= _heap[i].f then break end
+        _heap[p], _heap[i] = _heap[i], _heap[p]
         i = p
     end
 end
 
-local function pqPop()
-    if _pqSize == 0 then return nil end
-    local top  = _pqData[1]
-    local last = _pqData[_pqSize]
-    _pqData[_pqSize] = nil
-    _pqSize = _pqSize - 1
-    if _pqSize > 0 then
-        _pqData[1] = last
-        local i = 1
-        while true do
-            local l, r, s = i * 2, i * 2 + 1, i
-            if _pqData[l] and _pqData[l].f < _pqData[s].f then s = l end
-            if _pqData[r] and _pqData[r].f < _pqData[s].f then s = r end
-            if s == i then break end
-            _pqData[i], _pqData[s] = _pqData[s], _pqData[i]
-            i = s
-        end
+local function heapPop()
+    if _heapSz == 0 then return nil end
+    local top = _heap[1]
+    _heap[1] = _heap[_heapSz]
+    _heap[_heapSz] = nil
+    _heapSz = _heapSz - 1
+    local i = 1
+    while true do
+        local l, r, s = i*2, i*2+1, i
+        if _heap[l] and _heap[l].f < _heap[s].f then s = l end
+        if _heap[r] and _heap[r].f < _heap[s].f then s = r end
+        if s == i then break end
+        _heap[i], _heap[s] = _heap[s], _heap[i]
+        i = s
     end
     return top
 end
 
-local function pqReset()
-    for i = 1, _pqSize do _pqData[i] = nil end
-    _pqSize = 0
+local function heapReset()
+    for i = 1, _heapSz do _heap[i] = nil end
+    _heapSz = 0
 end
 
-local function pqIsEmpty() return _pqSize == 0 end
+-- ── Neighbours (4-directional) ────────────────────────────────
+local DIRS = {{1,0},{-1,0},{0,1},{0,-1}}
 
--- ─────────────────────────────────────────────────────────────
--- NEIGHBOUR GENERATION
--- FIX 4: Replaced `continue` (invalid Lua) with nested if-blocks.
--- `continue` only exists in Luau via `goto continue` + label.
--- This was silently skipping ALL fall neighbours.
--- ─────────────────────────────────────────────────────────────
--- NEIGHBOUR GENERATION - 4-directional single-tile only
--- CRITICAL: Every edge is exactly 1 tile so stepOneTile never crosses unchecked space
 local function getNeighbours(x, y)
     local result = {}
-    
-    -- 4-directional single-tile movement only
-    local dirs = {{1,0}, {-1,0}, {0,1}, {0,-1}}
-    for _, d in ipairs(dirs) do
-        local nx = x + d[1]
-        local ny = y + d[2]
-        -- Check if tile is passable (not solid, within bounds)
+    for _, d in ipairs(DIRS) do
+        local nx, ny = x + d[1], y + d[2]
         if not isSolid(nx, ny) then
-            table.insert(result, {x = nx, y = ny, cost = 1})
+            table.insert(result, {x=nx, y=ny, cost=1})
         end
     end
-    
     return result
 end
 
--- Old complex jump/fall logic removed - caused pathfinder to route through uncached tiles
--- The simplified version ensures every path step is exactly 1 tile
--- stepOneTile handles the physics (tweening) for each single-tile move
+-- ── Main search ───────────────────────────────────────────────
+function AStar.find(sx, sy, gx, gy)
+    if sx == gx and sy == gy then return {} end
 
--- ─────────────────────────────────────────────────────────────
--- A* PATHFINDER
--- FIX 5: Removed goal solid-block check that rejected valid air-tile goals.
--- The goal is where the player needs to STAND, which is an air tile above solid.
--- ─────────────────────────────────────────────────────────────
--- A* (no goal/start validation at all)
-local function astar(startX, startY, goalX, goalY)
-    if startX == goalX and startY == goalY then return {} end
-
-    local function tileKey(x, y) return x * 10000 + y end
-    local function heuristic(x, y)
-        return math.abs(x - goalX) + math.abs(y - goalY)
-    end
+    local function key(x, y) return x * 10000 + y end
+    local function h(x, y) return math.abs(x-gx) + math.abs(y-gy) end
 
     local closed   = {}
     local cameFrom = {}
     local gScore   = {}
 
-    pqReset()
-    local sk = tileKey(startX, startY)
-    gScore[sk] = 0
-    pqPush({x = startX, y = startY, g = 0, f = heuristic(startX, startY)})
+    heapReset()
+    gScore[key(sx, sy)] = 0
+    heapPush({x=sx, y=sy, g=0, f=h(sx,sy)})
 
     local expanded = 0
-    while not pqIsEmpty() do
+    while _heapSz > 0 do
         expanded = expanded + 1
-        if expanded > ASTAR_MAX_NODES then
-            warn("[PTHT] A*: node limit hit")
+        if expanded > CFG.MAX_PATH_NODES then
+            warn("[AStar] Node limit hit — path too long or area too large")
             return nil
         end
 
-        local cur = pqPop()
-        local ck  = tileKey(cur.x, cur.y)
+        local cur = heapPop()
+        local ck  = key(cur.x, cur.y)
         if closed[ck] then continue end
         closed[ck] = true
 
-        if cur.x == goalX and cur.y == goalY then
-            local path = {}
+        if cur.x == gx and cur.y == gy then
+            -- Reconstruct
+            local path = {{x=gx, y=gy}}
             local node = ck
             while cameFrom[node] do
                 local parent = cameFrom[node]
-                table.insert(path, 1, {x = parent.x, y = parent.y})
-                node = tileKey(parent.x, parent.y)
+                table.insert(path, 1, {x=parent.x, y=parent.y})
+                node = key(parent.x, parent.y)
             end
-            table.insert(path, {x = goalX, y = goalY})
             return path
         end
 
         for _, nb in ipairs(getNeighbours(cur.x, cur.y)) do
-            local nk = tileKey(nb.x, nb.y)
+            local nk = key(nb.x, nb.y)
             if closed[nk] then continue end
             local tg = cur.g + nb.cost
             if not gScore[nk] or tg < gScore[nk] then
                 gScore[nk]   = tg
                 cameFrom[nk] = cur
-                pqPush({x = nb.x, y = nb.y, g = tg, f = tg + heuristic(nb.x, nb.y)})
+                heapPush({x=nb.x, y=nb.y, g=tg, f=tg + h(nb.x, nb.y)})
             end
         end
     end
 
-    return nil
+    return nil  -- No path found
 end
 
 -- ─────────────────────────────────────────────────────────────
--- WATCHDOG
--- Defined BEFORE walkToTile so kickWatchdog() can be called inside it.
--- FIX 6: This was the forward-reference crash causing the first walk to fail.
+-- MODULE 4 — PATH CACHE
+-- Stores recently computed paths keyed by start+goal.
+-- Invalidated when the tile cache version changes.
 -- ─────────────────────────────────────────────────────────────
-local _watchdogLastTick         = 0
-local _watchdogExtended         = false
-local WATCHDOG_TIMEOUT          = 15
-local WATCHDOG_TIMEOUT_EXTENDED = 50
-local _watchdogGeneration       = 0
+local PathCache = {}
+local _pcData   = {}
+local _pcOrder  = {}
+local _pcSize   = 0
+local _pcVersion= 0
+local PC_MAX    = 150
 
--- Forward-declare StopPTHT so watchdog can reference it
-local StopPTHT
-
-local function kickWatchdog()
-    _watchdogLastTick = os.clock()
+local function _pcKey(sx, sy, gx, gy)
+    return sx..":"..sy..":"..gx..":"..gy
 end
 
-local function setWatchdogExtended(state)
-    _watchdogExtended = state
-    kickWatchdog()
+function PathCache.bump()   -- call whenever tiles change
+    _pcVersion = _pcVersion + 1
 end
 
-local function invalidateFarmCache()  -- forward decl used by watchdog
-    -- implemented below; placeholder here for reference
+function PathCache.get(sx, sy, gx, gy)
+    local entry = _pcData[_pcKey(sx,sy,gx,gy)]
+    if not entry or entry.ver ~= _pcVersion then return nil end
+    return entry.path
 end
 
-local function startWatchdog()
-    _watchdogGeneration = _watchdogGeneration + 1
-    local myGen = _watchdogGeneration
-
-    task.spawn(function()
-        task.wait(12)
-        kickWatchdog()
-
-        while PTHT_Running and _G.AutoPTHT and myGen == _watchdogGeneration do
-            task.wait(5)
-            if not PTHT_Running or not _G.AutoPTHT or myGen ~= _watchdogGeneration then break end
-
-            local timeout = _watchdogExtended and WATCHDOG_TIMEOUT_EXTENDED or WATCHDOG_TIMEOUT
-            local elapsed = os.clock() - _watchdogLastTick
-
-            if elapsed > timeout then
-                warn(string.format("[YSHub] Watchdog: frozen %.1fs - recovering", elapsed))
-
-                _G.IsDropping = false
-                _dropLock     = false
-                _G.CancelInventoryOperation = false
-
-                if movement then
-                    local safeX = math.clamp(
-                        (_G.MinX or 0) + math.floor(((_G.MaxX or 50) - (_G.MinX or 0)) / 2),
-                        0, WORLD_W
-                    )
-                    local safeY = math.clamp(_G.StartY or 0, 0, WORLD_H)
-                    movement.Position  = Vector3.new(safeX * TILE_SIZE, safeY * TILE_SIZE, 0)
-                    movement.VelocityX = 0
-                    movement.VelocityY = 0
-                    movement.Grounded  = true
-                    invalidateTileCache()
-                    pathCacheInvalidateAll()
-                    invalidateFarmCache()
-                    showNotification("Bot frozen - auto-recovered", 4)
-                else
-                    warn("[YSHub] Watchdog: movement nil - stopping bot")
-                    if StopPTHT then StopPTHT() end
-                end
-
-                kickWatchdog()
-            end
+function PathCache.put(sx, sy, gx, gy, path)
+    local k = _pcKey(sx,sy,gx,gy)
+    if _pcData[k] then
+        _pcData[k] = {path=path, ver=_pcVersion}
+        return
+    end
+    while _pcSize >= PC_MAX do
+        local old = table.remove(_pcOrder, 1)
+        if old and _pcData[old] then
+            _pcData[old] = nil; _pcSize = _pcSize - 1
         end
-    end)
+    end
+    _pcData[k] = {path=path, ver=_pcVersion}
+    table.insert(_pcOrder, k)
+    _pcSize = _pcSize + 1
+end
+
+function PathCache.invalidate()
+    _pcData = {}; _pcOrder = {}; _pcSize = 0
 end
 
 -- ─────────────────────────────────────────────────────────────
--- LERP WALK — moves one tile at a time with smooth interpolation
+-- MODULE 5 — SMOOTH STEPPER
+-- Lerps the movement module from one tile to the next using
+-- TweenService so physics feels continuous with no teleports.
 -- ─────────────────────────────────────────────────────────────
-local WALK_SPT  = (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) and 0.22 or 0.16
-local CLIMB_SPT = 0.20
+local Stepper = {}
 
 local function smoothstep(t)
     t = math.clamp(t, 0, 1)
     return t * t * (3 - 2 * t)
 end
 
-local function lerp(a, b, t) return a + (b - a) * t end
+-- Cancel any in-progress tween gracefully
+function Stepper.cancel()
+    if State.activeTween then
+        State.activeTween:Cancel()
+        State.activeTween = nil
+    end
+end
 
-local function stepOneTile(fromX, fromY, toX, toY)
+--[[
+    stepOneTile(fromX, fromY, toX, toY)
+    Moves the character exactly one tile using a lerp loop.
+    Returns true on success, false if interrupted.
+--]]
+function Stepper.stepOneTile(fromX, fromY, toX, toY)
     if not movement then return false end
-    if not PTHT_Running or not _G.AutoPTHT then return false end
+    syncCFG()
 
-    local srcWorldX = fromX * TILE_SIZE
-    local srcWorldY = fromY * TILE_SIZE
-    local dstWorldX = toX   * TILE_SIZE
-    local dstWorldY = toY   * TILE_SIZE
+    local srcW = Vector3.new(fromX * CFG.TILE_SIZE, fromY * CFG.TILE_SIZE, 0)
+    local dstW = Vector3.new(toX   * CFG.TILE_SIZE, toY   * CFG.TILE_SIZE, 0)
 
-    -- Hard-snap to source to eliminate drift
-    movement.Position  = Vector3.new(srcWorldX, srcWorldY, 0)
+    -- Hard-snap to source: eliminates accumulated drift before each step
+    movement.Position  = srcW
     movement.VelocityX = 0
     movement.VelocityY = 0
     movement.Grounded  = true
     RunService.Heartbeat:Wait()
 
-    local isVertical = (toY ~= fromY)
-    local duration   = isVertical and CLIMB_SPT or WALK_SPT
-    local elapsed    = 0
+    if State.interrupted then return false end
 
+    local isVert   = (toY ~= fromY)
+    local duration = isVert and CFG.CLIMB_SPT or CFG.WALK_SPT
+    local elapsed  = 0
+
+    -- Lerp loop — runs every heartbeat for smooth interpolation
     while elapsed < duration do
-        if not PTHT_Running or not _G.AutoPTHT then
+        if State.interrupted then
             movement.VelocityX = 0
             movement.VelocityY = 0
             return false
@@ -1493,27 +1440,25 @@ local function stepOneTile(fromX, fromY, toX, toY)
         elapsed  = math.min(elapsed + dt, duration)
         local t  = smoothstep(elapsed / duration)
 
-        movement.Position = Vector3.new(
-            lerp(srcWorldX, dstWorldX, t),
-            lerp(srcWorldY, dstWorldY, t),
-            0
-        )
+        -- Interpolate position
+        movement.Position = srcW:Lerp(dstW, t)
 
-        if isVertical then
+        -- Set velocity direction for game physics/animations
+        if isVert then
             local dir = toY > fromY and 1 or -1
-            movement.Grounded  = false
-            movement.VelocityY = dir * (TILE_SIZE / CLIMB_SPT)
+            movement.VelocityY = dir * (CFG.TILE_SIZE / CFG.CLIMB_SPT)
             movement.VelocityX = 0
+            movement.Grounded  = false
         else
             local dir = toX > fromX and 1 or -1
-            movement.Grounded  = true
-            movement.VelocityX = dir * (TILE_SIZE / WALK_SPT)
+            movement.VelocityX = dir * (CFG.TILE_SIZE / CFG.WALK_SPT)
             movement.VelocityY = 0
+            movement.Grounded  = true
         end
     end
 
-    -- Hard-snap to destination
-    movement.Position  = Vector3.new(dstWorldX, dstWorldY, 0)
+    -- Hard-snap to destination: prevents floating-point drift
+    movement.Position  = dstW
     movement.VelocityX = 0
     movement.VelocityY = 0
     movement.Grounded  = true
@@ -1523,116 +1468,310 @@ local function stepOneTile(fromX, fromY, toX, toY)
 end
 
 -- ─────────────────────────────────────────────────────────────
--- WALK TO TILE
--- Single authoritative definition (FIX 6: no duplicate definition).
--- Computes or retrieves a cached A* path then steps tile-by-tile.
+-- MODULE 6 — PATH EXECUTOR
+-- Takes a computed path and walks it step by step.
+-- Validates each upcoming tile; replans if anything is blocked.
 -- ─────────────────────────────────────────────────────────────
-local function walkToTile(targetX, targetY)
-    if not movement then
-        warn("[PTHT] walkToTile: movement is nil")
-        return false
-    end
-    if not movement.Position then
-        warn("[PTHT] walkToTile: movement.Position is nil")
-        return false
-    end
-    if not PTHT_Running then return false end
+local Executor = {}
 
-    local startX = math.round(movement.Position.X / TILE_SIZE)
-    local startY = math.round(movement.Position.Y / TILE_SIZE)
+--[[
+    execute(path, goalX, goalY)
+    Walks through `path`. If a tile becomes blocked mid-walk,
+    recomputes from the current position and continues.
+    Returns true if goal reached, false otherwise.
+--]]
+function Executor.execute(path, goalX, goalY)
+    if not path or #path == 0 then return true end
+    State.currentPath = path
+    State.replanCount = 0
 
-    if startX == targetX and startY == targetY then return true end
+    local stepIdx = 1
 
-    print(string.format("[PTHT] Walking (%d,%d) → (%d,%d)", startX, startY, targetX, targetY))
+    while stepIdx <= #path do
+        if State.interrupted then
+            if CFG.DEBUG then print("[Executor] Interrupted at step", stepIdx) end
+            return false
+        end
 
-    -- Try cached path first
-    local path = pathCacheGet(startX, startY, targetX, targetY)
+        local wp = path[stepIdx]
 
-    if not path then
-        print("[PTHT] 🔍 Computing path...")
-        path = astar(startX, startY, targetX, targetY)
+        -- ── Pre-step validation ───────────────────────────────
+        if CFG.VALIDATE_AHEAD and not PathValidator.nextStepOk(path, stepIdx) then
+            warn(string.format("[Executor] Tile (%d,%d) blocked at step %d — replanning",
+                wp.x, wp.y, stepIdx))
 
-        if not path then
-            -- One-shot recovery: rebuild tile cache and retry once
-            warn(string.format("[PTHT] No path (%d,%d)→(%d,%d) — rebuilding collision cache",
-                startX, startY, targetX, targetY))
-            invalidateTileCache()
-            pathCacheInvalidateAll()
-
-            -- Bake synchronously (with yield) then retry
-            local bakeOk = prebakeCollision()
-            if bakeOk then
-                path = astar(startX, startY, targetX, targetY)
-            end
-
-            if not path then
-                warn("[PTHT] ❌ Still no path after cache rebuild — target may be unreachable")
+            local cx, cy = PosUtil.currentTile()
+            local newPath = AStar.find(cx, cy, goalX, goalY)
+            if not newPath then
+                warn("[Executor] Replan failed — goal unreachable")
                 return false
             end
+
+            State.replanCount = State.replanCount + 1
+            if State.replanCount > CFG.MAX_REPLAN then
+                warn("[Executor] Too many replans — aborting")
+                return false
+            end
+
+            PathCache.put(cx, cy, goalX, goalY, newPath)
+            path    = newPath
+            stepIdx = 1
+            if CFG.DEBUG then print("[Executor] Replanned — new path length:", #path) end
+            continue
         end
 
-        print("[PTHT] ✅ Path: " .. #path .. " waypoints")
-        pathCachePut(startX, startY, targetX, targetY, path)
-    else
-        print("[PTHT] 📦 Using cached path: " .. #path .. " waypoints")
+        -- ── Read actual position (server may have corrected us) ─
+        local curX, curY = PosUtil.currentTile()
+        State.currentStep = stepIdx
+
+        -- Already at this waypoint (server snapped or we skipped)
+        if curX == wp.x and curY == wp.y then
+            stepIdx = stepIdx + 1
+            continue
+        end
+
+        -- Drift check: if we're far off the expected tile, replan
+        local drift = PosUtil.distTiles(curX, curY, wp.x, wp.y)
+        if drift > CFG.DRIFT_THRESHOLD then
+            warn(string.format("[Executor] Drift %d tiles at step %d — replanning", drift, stepIdx))
+            local newPath = AStar.find(curX, curY, goalX, goalY)
+            if not newPath then return false end
+            State.replanCount = State.replanCount + 1
+            if State.replanCount > CFG.MAX_REPLAN then return false end
+            PathCache.put(curX, curY, goalX, goalY, newPath)
+            path    = newPath
+            stepIdx = 1
+            continue
+        end
+
+        -- ── Execute the step ──────────────────────────────────
+        if CFG.DEBUG then
+            print(string.format("[Executor] Step %d/%d  (%d,%d)→(%d,%d)",
+                stepIdx, #path, curX, curY, wp.x, wp.y))
+        end
+
+        local ok = Stepper.stepOneTile(curX, curY, wp.x, wp.y)
+        if not ok then return false end
+
+        -- Short pause so the server acknowledges our position
+        if CFG.POST_STEP_WAIT > 0 then
+            task.wait(CFG.POST_STEP_WAIT)
+        end
+
+        -- Post-step validation: did we actually land where expected?
+        local ax, ay = PosUtil.currentTile()
+        if ax ~= wp.x or ay ~= wp.y then
+            warn(string.format("[Executor] Post-step drift: expected (%d,%d) got (%d,%d)",
+                wp.x, wp.y, ax, ay))
+            -- Try to continue from where we actually are
+            local newPath = AStar.find(ax, ay, goalX, goalY)
+            if not newPath then return false end
+            State.replanCount = State.replanCount + 1
+            if State.replanCount > CFG.MAX_REPLAN then return false end
+            path    = newPath
+            stepIdx = 1
+            continue
+        end
+
+        -- Reset replan counter on successful step
+        State.replanCount = 0
+        stepIdx = stepIdx + 1
     end
 
-    -- Execute path step-by-step, re-reading position each step
-    local curX = startX
-    local curY = startY
-
-    for i, waypoint in ipairs(path) do
-        if not PTHT_Running or not _G.AutoPTHT then
-            movement.VelocityX = 0
-            return false
-        end
-
-        kickWatchdog()
-
-        -- Absorb any server position correction
-        curX = math.round(movement.Position.X / TILE_SIZE)
-        curY = math.round(movement.Position.Y / TILE_SIZE)
-
-        local nextX = waypoint.x
-        local nextY = waypoint.y
-
-        -- Already there (server snapped us)
-        if curX == nextX and curY == nextY then continue end
-
-        -- Drift detected: replan from current real position
-        if math.abs(curX - nextX) > 2 or math.abs(curY - nextY) > 2 then
-            warn(string.format("[PTHT] Drift at step %d — replanning", i))
-            return walkToTile(targetX, targetY)
-        end
-
-                        if not stepOneTile(curX, curY, nextX, nextY) then
-            warn("[PTHT] Failed step "..i.."/"..#path)
-            return false
-        end
-        
-        -- CRITICAL: Wait after EACH tile so movement is SMOOTH and SEQUENTIAL
-        task.wait(0.15)
-        
-        -- VALIDATE: Check if we actually reached the target tile
-        local actualX = math.round(movement.Position.X / TILE_SIZE)
-        local actualY = math.round(movement.Position.Y / TILE_SIZE)
-        
-        -- If we drifted even 1 tile, recalculate path from current position
-        if actualX ~= nextX or actualY ~= nextY then
-            warn(string.format("[PTHT] Drift detected: expected (%d,%d) but at (%d,%d) - recalculating",
-                nextX, nextY, actualX, actualY))
-            -- Recalculate from where we actually are
-            return walkToTile(targetX, targetY)
-        end
+    -- Final snap to guarantee pixel-perfect arrival
+    if movement then
+        movement.Position  = PosUtil.tileToWorld(goalX, goalY)
+        movement.VelocityX = 0
+        movement.VelocityY = 0
+        movement.Grounded  = true
     end
 
-    movement.VelocityX = 0
-    movement.VelocityY = 0
-    movement.Grounded  = true
     return true
 end
 
 -- ─────────────────────────────────────────────────────────────
+-- MODULE 7 — WALK TO TILE  (public API)
+-- Single entry point: compute/fetch path, then execute it.
+-- ─────────────────────────────────────────────────────────────
+local function walkToTile(targetX, targetY)
+    if not movement or not movement.Position then
+        warn("[walkToTile] movement module not available")
+        return false
+    end
+
+    local sx, sy = PosUtil.currentTile()
+    if sx == targetX and sy == targetY then return true end
+
+    if CFG.DEBUG then
+        print(string.format("[walkToTile] (%d,%d) → (%d,%d)", sx, sy, targetX, targetY))
+    end
+
+    State.interrupted = false
+
+    -- Try cache first
+    local path = PathCache.get(sx, sy, targetX, targetY)
+
+    if not path then
+        if CFG.DEBUG then print("[walkToTile] Computing new path...") end
+        path = AStar.find(sx, sy, targetX, targetY)
+
+        if not path then
+            warn(string.format("[walkToTile] No path (%d,%d)→(%d,%d)", sx, sy, targetX, targetY))
+            return false
+        end
+
+        if CFG.DEBUG then print("[walkToTile] Path found:", #path, "steps") end
+        PathCache.put(sx, sy, targetX, targetY, path)
+    else
+        if CFG.DEBUG then print("[walkToTile] Cache hit:", #path, "steps") end
+    end
+
+    local reached = Executor.execute(path, targetX, targetY)
+
+    if reached then
+        if CFG.DEBUG then print("[walkToTile] ✅ Arrived at", targetX, targetY) end
+    else
+        if CFG.DEBUG then warn("[walkToTile] ❌ Failed to reach", targetX, targetY) end
+    end
+
+    return reached
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- MODULE 8 — TOGGLES & RUNTIME CONTROLS
+-- Clean on/off switches, accessible from UI or _G.
+-- ─────────────────────────────────────────────────────────────
+local Controls = {}
+
+-- Stop any active walk immediately
+function Controls.interrupt()
+    State.interrupted = true
+    Stepper.cancel()
+    if movement then
+        movement.VelocityX = 0
+        movement.VelocityY = 0
+        movement.Grounded  = true
+    end
+end
+
+-- Resume (clear interrupt flag)
+function Controls.resume()
+    State.interrupted = false
+end
+
+-- Toggle debug logging
+function Controls.setDebug(on)
+    CFG.DEBUG = on
+end
+
+-- Set walk speed (1–100 scale, matching your existing UI sliders)
+function Controls.setWalkSpeed(v)
+    _G.WalkSpeed  = v
+    CFG.WALK_SPT  = (101 - v) / 100
+end
+
+function Controls.setClimbSpeed(v)
+    _G.ClimbSpeed  = v
+    CFG.CLIMB_SPT  = (101 - v) / 100
+end
+
+-- Enable/disable pre-step tile validation
+function Controls.setValidateAhead(on)
+    CFG.VALIDATE_AHEAD = on
+end
+
+-- Invalidate all cached paths (call after any tile change)
+function Controls.invalidateCache()
+    PathCache.invalidate()
+    PathCache.bump()
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- MODULE 9 — INVENTORY GUARD
+-- Before each walk the bot checks whether inventory is full.
+-- If full, it halts and fires an optional callback.
+-- ─────────────────────────────────────────────────────────────
+local InventoryGuard = {}
+local _invFullCallback = nil
+
+function InventoryGuard.onFull(cb)
+    _invFullCallback = cb
+end
+
+function InventoryGuard.isFull(inventory)
+    if not inventory or not inventory.MaxSlots then return false end
+    local used = 0
+    for s = 1, inventory.MaxSlots do
+        if inventory.Stacks[s] and inventory.Stacks[s].Id then
+            used = used + 1
+        end
+    end
+    return used >= inventory.MaxSlots - 1  -- leave 1 slot buffer
+end
+
+-- Call this before every walk if you want inventory-aware pathing
+function InventoryGuard.check(inventory)
+    if InventoryGuard.isFull(inventory) then
+        warn("[InventoryGuard] Inventory full — pausing movement")
+        Controls.interrupt()
+        if _invFullCallback then _invFullCallback() end
+        return false
+    end
+    return true
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- PUBLIC EXPORTS
+-- ─────────────────────────────────────────────────────────────
+
+-- ─────────────────────────────────────────────────────────────
+-- COLLISION BAKING
+local function prebakeCollision()
+    if not WorldManager then return false end
+    invalidateTileCache()
+    local count = 0
+    for x = 0, WORLD_W do
+        for y = 0, WORLD_H do
+            local tileId = WorldManager.GetTile(x, y, 1)
+            if tileId and not isSapling(tileId) then
+                tileCache[x * 10000 + y] = true
+            else
+                tileCache[x * 10000 + y] = false
+            end
+            count = count + 1
+        end
+        if x % 10 == 0 then task.wait() end
+    end
+    print(string.format("[PTHT] Collision bake: %d tiles cached", count))
+    return count > 0
+end
+
+-- WATCHDOG
+local _watchdogLastKick = 0
+local _watchdogExtended = false
+
+local function kickWatchdog()
+    _watchdogLastKick = os.clock()
+end
+
+local function setWatchdogExtended(on)
+    _watchdogExtended = on
+    kickWatchdog()
+end
+
+local function startWatchdog()
+    task.spawn(function()
+        while PTHT_Running do
+            task.wait(5)
+            local timeout = _watchdogExtended and 50 or 15
+            if PTHT_Running and (os.clock() - _watchdogLastKick) > timeout then
+                warn("[Watchdog] Bot appears stuck - stopping")
+                StopPTHT()
+            end
+        end
+    end)
+end
+
 -- FARM CACHE
 -- ─────────────────────────────────────────────────────────────
 local _farmCache        = { emptySpots = 0, readySaplings = {}, growingSaplings = 0 }
@@ -4392,4 +4531,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YSSSS")
+print("Ycc")
