@@ -1119,9 +1119,12 @@ local function walkToTile(gx, gy)
         return false
     end
     
-    -- Walk path with validation
+        -- Walk path with validation
     for i, tile in ipairs(path) do
         if not PTHT_Running then return false end
+        
+        -- Kick watchdog every 10 tiles to prevent timeout on long paths
+        if i % 10 == 0 then kickWatchdog() end
         
         -- CRITICAL: Validate tile is actually passable before moving
         if isSolid(tile.x, tile.y) then
