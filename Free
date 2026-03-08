@@ -1102,7 +1102,7 @@
 
 
 
-    -- OPTIMIZED: Tile-by-tile smooth movement (AC safe, no pathfinding lag)
+    -- OPTIMIZED: Tile-by-tile smooth movement with collision check
 local function walkToTile(gx, gy)
     if not movement then return false end
     if not PTHT_Running then return false end
@@ -1111,23 +1111,72 @@ local function walkToTile(gx, gy)
     local sy = math.round(movement.Position.Y / TILE_SIZE)
     if sx == gx and sy == gy then return true end
     
-    -- Simple path: move horizontally first, then vertically (no BFS needed)
+    -- Try horizontal-first path
     local path = {}
+    local pathBlocked = false
     
     -- Horizontal movement
     if gx ~= sx then
         local dx = gx > sx and 1 or -1
         for x = sx + dx, gx, dx do
+            if isSolid(x, sy) then
+                pathBlocked = true
+                break
+            end
             table.insert(path, {x = x, y = sy})
         end
     end
     
     -- Vertical movement
-    if gy ~= sy then
+    if not pathBlocked and gy ~= sy then
         local dy = gy > sy and 1 or -1
         for y = sy + dy, gy, dy do
+            if isSolid(gx, y) then
+                pathBlocked = true
+                break
+            end
             table.insert(path, {x = gx, y = y})
         end
+    end
+    
+    -- If horizontal-first blocked, try vertical-first
+    if pathBlocked then
+        path = {}
+        pathBlocked = false
+        
+        -- Vertical first
+        if gy ~= sy then
+            local dy = gy > sy and 1 or -1
+            for y = sy + dy, gy, dy do
+                if isSolid(sx, y) then
+                    pathBlocked = true
+                    break
+                end
+                table.insert(path, {x = sx, y = y})
+            end
+        end
+        
+        -- Then horizontal
+        if not pathBlocked and gx ~= sx then
+            local dx = gx > sx and 1 or -1
+            for x = sx + dx, gx, dx do
+                if isSolid(x, gy) then
+                    pathBlocked = true
+                    break
+                end
+                table.insert(path, {x = x, y = gy})
+            end
+        end
+    end
+    
+    -- If both L-paths blocked, use BFS as fallback
+    if pathBlocked or #path == 0 then
+        local bfsPath = findPath(sx, sy, gx, gy)
+        if not bfsPath or #bfsPath == 0 then
+            warn("[Walk] No path from ("..sx..","..sy..") to ("..gx..","..gy..")")
+            return false
+        end
+        path = bfsPath
     end
     
     -- Smooth interpolation settings
@@ -4084,4 +4133,4 @@ end
         end
         tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
     end)
-    print("cccS YS")
+    print("YS YS YS YS YS YS")
