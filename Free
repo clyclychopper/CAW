@@ -1999,10 +1999,42 @@ local function prebakeCollision()
         for _ in pairs(broken) do bCount = bCount + 1 end
         print("[BREAK] Broke "..bCount.." tiles")
         
-                -- Wait for drops to spawn
+                        -- CRITICAL: Verify all blocks are actually broken before collecting
+        print("[BREAK] Verifying all blocks are broken...")
+        local stillUnbroken = {}
+        for _, tile in ipairs(tilesToBreak) do
+            if WorldManager.GetTile(tile.x, tile.y, 1) or WorldManager.GetTile(tile.x, tile.y, 2) then
+                table.insert(stillUnbroken, tile)
+                print("[BREAK] WARNING: Block still exists at ("..tile.x..","..tile.y..")")
+            end
+        end
+        
+        -- If any blocks remain, do one more breaking pass
+        if #stillUnbroken > 0 then
+            print("[BREAK] "..#stillUnbroken.." blocks still remain, doing extra break pass...")
+            for _, tile in ipairs(stillUnbroken) do
+                if not PTHT_Running or not _G.AutoPTHT then break end
+                movement.Position = Vector3.new(midX * TILE_SIZE, midY * TILE_SIZE, 0)
+                movement.Grounded = true
+                movement.VelocityX = 0
+                movement.VelocityY = 0
+                
+                local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
+                if remote then
+                    -- Hit 5 times to ensure it breaks
+                    for hit = 1, 5 do
+                        pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
+                        task.wait(0.1)
+                    end
+                end
+                task.wait(0.2)
+            end
+        end
+        
+        -- Wait for drops to spawn
         task.wait(1.5)
         
-        -- Collect drops using pathfinding
+        -- Collect drops using smooth pathfinding
         print("[BREAK] Collecting drops...")
         local collected = 0
         local breakAreaMinX = midX - 2
@@ -2024,11 +2056,21 @@ local function prebakeCollision()
             end
         end
         
-        -- Walk to each drop position
-        for _, pos in ipairs(dropPositions) do
+        -- Sort drops by distance for efficient collection
+        local curX = math.round(movement.Position.X / TILE_SIZE)
+        local curY = math.round(movement.Position.Y / TILE_SIZE)
+        table.sort(dropPositions, function(a, b)
+            local distA = math.abs(a.x - curX) + math.abs(a.y - curY)
+            local distB = math.abs(b.x - curX) + math.abs(b.y - curY)
+            return distA < distB
+        end)
+        
+        -- Walk to each drop position with smooth interpolation
+        for i, pos in ipairs(dropPositions) do
             if not PTHT_Running or not _G.AutoPTHT then break end
+            print("[BREAK] Collecting drop "..i.."/"..#dropPositions.." at ("..pos.x..","..pos.y..")")
             if walkToTile(pos.x, pos.y) then
-                task.wait(0.15)
+                task.wait(0.3)
                 collected = collected + 1
             end
         end
