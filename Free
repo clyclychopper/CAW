@@ -1299,7 +1299,8 @@ local function getNeighbours(x, y)
     for _, d in ipairs(dirs) do
         local nx = x + d[1]
         local ny = y + d[2]
-        if canMoveTo(nx, ny) then
+        -- Check if tile is passable (not solid, within bounds)
+        if not isSolid(nx, ny) then
             table.insert(result, {x = nx, y = ny, cost = 1})
         end
     end
@@ -4374,4 +4375,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YS")
+print("YS YS YS YS YS YS")
