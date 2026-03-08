@@ -1375,12 +1375,76 @@ local function lerpToTile(targetX, targetY)
         movement.VelocityX = velX
     end
 
-    movement.Position  = Vector3.new(destX, destY, 0)
+        movement.Position  = Vector3.new(destX, destY, 0)
     movement.VelocityX = 0
     movement.Grounded  = true
     return true
 end
 
+-- ─────────────────────────────────────────────────────────────
+-- WATCHDOG (moved before walkToTile so it can be called)
+-- ─────────────────────────────────────────────────────────────
+local _watchdogLastTick         = 0
+local _watchdogExtended         = false
+local WATCHDOG_TIMEOUT          = 15
+local WATCHDOG_TIMEOUT_EXTENDED = 50
+local _watchdogGeneration       = 0
+
+local function kickWatchdog()
+    _watchdogLastTick = os.clock()
+end
+
+local function setWatchdogExtended(state)
+    _watchdogExtended = state
+    kickWatchdog()
+end
+
+local function startWatchdog()
+    _watchdogGeneration = _watchdogGeneration + 1
+    local myGen = _watchdogGeneration
+
+    task.spawn(function()
+        task.wait(12)
+        kickWatchdog()
+
+        while PTHT_Running and _G.AutoPTHT and myGen == _watchdogGeneration do
+            task.wait(5)
+            if not PTHT_Running or not _G.AutoPTHT or myGen ~= _watchdogGeneration then break end
+
+            local timeout = _watchdogExtended and WATCHDOG_TIMEOUT_EXTENDED or WATCHDOG_TIMEOUT
+            local elapsed = os.clock() - _watchdogLastTick
+
+            if elapsed > timeout then
+                warn(string.format("[YSHub] Watchdog: frozen %.1fs - recovering", elapsed))
+
+                _G.IsDropping = false
+                _dropLock     = false
+                _G.CancelInventoryOperation = false
+
+                if movement then
+                    local safeX = math.clamp(
+                        (_G.MinX or 0) + math.floor(((_G.MaxX or 50) - (_G.MinX or 0)) / 2),
+                        0, WORLD_W
+                    )
+                    local safeY = math.clamp(_G.StartY or 0, 0, WORLD_H)
+                    movement.Position  = Vector3.new(safeX * TILE_SIZE, safeY * TILE_SIZE, 0)
+                    movement.VelocityX = 0
+                    movement.VelocityY = 0
+                    movement.Grounded  = true
+                    invalidateTileCache()
+                    pathCacheInvalidateAll()
+                    invalidateFarmCache()
+                    showNotification("Bot frozen - auto-recovered", 4)
+                else
+                    warn("[YSHub] Watchdog: movement nil - stopping bot")
+                    StopPTHT()
+                end
+
+                kickWatchdog()
+            end
+        end
+    end)
+end
 
 local function walkToTile(targetX, targetY)
     if not movement then 
@@ -1433,77 +1497,9 @@ local function walkToTile(targetX, targetY)
         if not lerpToTile(waypoint.x, waypoint.y) then return false end
     end
 
-    movement.VelocityX = 0
+        movement.VelocityX = 0
     movement.Grounded  = true
     return true
-end
-
--- ─────────────────────────────────────────────────────────────
--- WATCHDOG
--- Detects when the bot loop freezes and auto-recovers.
--- ─────────────────────────────────────────────────────────────
-local _watchdogLastTick         = 0
-local _watchdogExtended         = false
-local WATCHDOG_TIMEOUT          = 15
-local WATCHDOG_TIMEOUT_EXTENDED = 50
-local _watchdogGeneration       = 0
-
-local function kickWatchdog()
-    _watchdogLastTick = os.clock()
-end
-
-local function setWatchdogExtended(state)
-    _watchdogExtended = state
-    kickWatchdog()
-end
-
-local function startWatchdog()
-    _watchdogGeneration = _watchdogGeneration + 1
-    local myGen = _watchdogGeneration
-
-    task.spawn(function()
-        task.wait(12)
-        kickWatchdog()
-
-        while PTHT_Running and _G.AutoPTHT and myGen == _watchdogGeneration do
-            task.wait(5)
-            if not PTHT_Running or not _G.AutoPTHT or myGen ~= _watchdogGeneration then break end
-
-            local timeout = _watchdogExtended and WATCHDOG_TIMEOUT_EXTENDED or WATCHDOG_TIMEOUT
-            local elapsed = os.clock() - _watchdogLastTick
-
-            if elapsed > timeout then
-                warn(string.format("[YSHub] Watchdog: frozen %.1fs — recovering", elapsed))
-
-                -- Force-release any locks
-                _G.IsDropping = false
-                _dropLock     = false
-                _G.CancelInventoryOperation = false
-
-                if movement then
-                    -- Teleport to safe position inside farm bounds
-                    local safeX = math.clamp(
-                        (_G.MinX or 0) + math.floor(((_G.MaxX or 50) - (_G.MinX or 0)) / 2),
-                        0, WORLD_W
-                    )
-                    local safeY = math.clamp(_G.StartY or 0, 0, WORLD_H)
-                    movement.Position  = Vector3.new(safeX * TILE_SIZE, safeY * TILE_SIZE, 0)
-                    movement.VelocityX = 0
-                    movement.VelocityY = 0
-                    movement.Grounded  = true
-                    invalidateTileCache()
-                    pathCacheInvalidateAll()
-                    invalidateFarmCache()
-                    showNotification("⚠️ Bot frozen — auto-recovered", 4)
-                else
-                    warn("[YSHub] Watchdog: movement nil — stopping bot")
-                    StopPTHT()
-                end
-
-                kickWatchdog()
-            end
-        end
-    end)
 end
 
 -- ─────────────────────────────────────────────────────────────
