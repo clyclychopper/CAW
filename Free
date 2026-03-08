@@ -1099,9 +1099,9 @@ local CFG = {
     WALK_SPT         = 0.14,     -- Seconds per horizontal tile  (lower = faster)
     CLIMB_SPT        = 0.20,     -- Seconds per vertical tile
     POST_STEP_WAIT   = 0.08,     -- Brief pause after each step (smooths server lag)
-    DRIFT_THRESHOLD  = 2,        -- Tiles of drift before full replan
-    MAX_REPLAN       = 5,        -- Max consecutive replans before giving up
-    MAX_PATH_NODES   = 3000,     -- A* node budget
+      DRIFT_THRESHOLD  = 2,        -- Tiles of drift before full replan
+  MAX_REPLAN       = 5,        -- Max consecutive replans before giving up
+  MAX_PATH_NODES   = 25000,    -- A* node budget (increased for long paths)
     VALIDATE_AHEAD   = true,     -- Pre-validate next tile before stepping
     DEBUG            = false,    -- Print step-by-step info
 }
@@ -1136,19 +1136,16 @@ local function injectModules(mv, wm)
 end
 
 -- ─────────────────────────────────────────────────────────────
--- TILE CACHE  (shared with caller if you pass one in)
--- ─────────────────────────────────────────────────────────────
-local tileCache = {}  -- [x*10000+y] = true(solid) / false(passable)
+  -- TILE CACHE - Using outer scope tileCache (no shadowing)
+  -- ─────────────────────────────────────────────────────────────
+  -- Removed inner tileCache declaration - using outer scope variable
 
-local function setTileCache(cache)
-    tileCache = cache  -- let caller share their cache
-end
-
-local function isSolid(x, y)
-    if x < 0 or x > 200 or y < 0 or y > 200 then return true end
-    local v = tileCache[x * 10000 + y]
-    return v == nil or v == true  -- nil = uncached = assume solid (safe)
-end
+  local function isSolid(x, y)
+      if x < 0 or x > 200 or y < 0 or y > 200 then return true end
+      -- true = solid block, false = passable, nil = not baked = treat as PASSABLE
+      -- (if it was solid it would have been baked as true)
+      return tileCache[x * 10000 + y] == true
+  end
 
 local function isAir(x, y)
     return not isSolid(x, y)
@@ -1731,26 +1728,23 @@ end
 local function prebakeCollision()
     if not WorldManager then return false end
     
-    -- Build to temporary table for atomic assignment
-    local tempCache = {}
-    local count = 0
+    -- Clear existing table in-place (preserves all upvalue references)
+    for k in pairs(tileCache) do
+        tileCache[k] = nil
+    end
+    tileCacheVersion = tileCacheVersion + 1
     
+    local count = 0
     for x = 0, WORLD_W do
         for y = 0, WORLD_H do
             local tileId = WorldManager.GetTile(x, y, 1)
-            if tileId and not isSapling(tileId) then
-                tempCache[x * 10000 + y] = true
-            else
-                tempCache[x * 10000 + y] = false
-            end
+            -- nil tileId = air = passable = false
+            -- non-nil non-sapling = solid block = true
+            tileCache[x * 10000 + y] = (tileId ~= nil and not isSapling(tileId))
             count = count + 1
         end
         if x % 10 == 0 then task.wait() end
     end
-    
-    -- Atomic assignment - cache is never partially populated
-    tileCache = tempCache
-    tileCacheVersion = tileCacheVersion + 1
         local blockedCount = 0
     local passableCount = 0
     for k, v in pairs(tileCache) do
@@ -2479,11 +2473,10 @@ local function StartPTHT(mv, wm, im, inv)
         return
     end
 
-        PTHT_Running = true
+            PTHT_Running = true
     
     -- Wire up modules now that they're loaded
     injectModules(movement, WorldManager)
-    setTileCache(tileCache)
     
     invalidateFarmCache()
 
