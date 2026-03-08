@@ -1022,7 +1022,7 @@ Hub.TILE_SIZE       = 4.5
 Hub.WORLD_W         = 120
 Hub.WORLD_H         = 70
 Hub.MOVE_DELAY      = 0.1
-Hub.ASTAR_MAX_NODES = 3000
+Hub.ASTAR_MAX_NODES = 15000
 Hub.MAX_JUMP        = 3
 Hub.MAX_FALL        = 20
 Hub.getGrowTime = getGrowTime
@@ -4542,4 +4542,4 @@ task.spawn(function()
     end
     tween(winStroke, {Color=T.border, Thickness=1}, 0.3)
 end)
-print("YS YS YS YS YS YS")
+print("YS YS YS ssss YS YS")
