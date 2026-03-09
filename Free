@@ -79,18 +79,9 @@
         end)
     end
 
-        local function addPulseGlow(obj, col)
+            local function addPulseGlow(obj, col)
         local s = stroke(obj, col or T.accent, 1.5)
-        if not MOBILE_PERFORMANCE_MODE then  -- Disable glow animations on mobile
-            task.spawn(function()
-                while obj and obj.Parent do
-                    tween(s, {Thickness = 2.5, Transparency = 0.1}, 0.9, Enum.EasingStyle.Sine)
-                    task.wait(0.9)
-                    tween(s, {Thickness = 1,   Transparency = 0.6}, 0.9, Enum.EasingStyle.Sine)
-                    task.wait(0.9)
-                end
-            end)
-        end
+        -- Aggressive: Disable ALL animations for performance
         return s
     end
 
@@ -188,18 +179,8 @@
     })
     tgGrad.Rotation = 0
     tgGrad.Parent = topGlow
-        if not MOBILE_PERFORMANCE_MODE then  -- Disable top glow animation on mobile
-        task.spawn(function()
-            while topGlow and topGlow.Parent do
-                tween(topGlow, {BackgroundTransparency = 0.5}, 1.8, Enum.EasingStyle.Sine)
-                task.wait(1.8)
-                tween(topGlow, {BackgroundTransparency = 0.85}, 1.8, Enum.EasingStyle.Sine)
-                task.wait(1.8)
-            end
-        end)
-    else
-        topGlow.BackgroundTransparency = 0.9  -- Static on mobile
-    end
+                -- Aggressive: Disable top glow animation for performance
+        topGlow.BackgroundTransparency = 0.9
 
     local titleBar = Instance.new("Frame")
     titleBar.Name             = "TitleBar"
@@ -258,16 +239,7 @@
     logoLabel.TextXAlignment     = Enum.TextXAlignment.Center
     logoLabel.ZIndex             = 7
     logoLabel.Parent             = logoFrame
-        if not MOBILE_PERFORMANCE_MODE then  -- Disable logo animation on mobile
-        task.spawn(function()
-            while logoFrame and logoFrame.Parent do
-                tween(logoFrame, {BackgroundColor3 = T.purple3}, 1.2, Enum.EasingStyle.Sine)
-                task.wait(1.2)
-                tween(logoFrame, {BackgroundColor3 = T.purple1}, 1.2, Enum.EasingStyle.Sine)
-                task.wait(1.2)
-            end
-        end)
-    end
+                -- Aggressive: Disable logo animation for performance
 
     local titleLbl = Instance.new("TextLabel")
     titleLbl.Size               = UDim2.new(0.6, 0, 0, 18)
@@ -877,12 +849,7 @@
         local dot = Instance.new("Frame")
         dot.Size = UDim2.new(0, 7, 0, 7); dot.BackgroundColor3 = col
         dot.BorderSizePixel = 0; dot.LayoutOrder = 1; dot.ZIndex = 7; dot.Parent = badge; corner(dot, 4)
-        task.spawn(function()
-            while badge and badge.Parent do
-                tween(dot, {BackgroundTransparency = 0.1},  0.7, Enum.EasingStyle.Sine); task.wait(0.7)
-                tween(dot, {BackgroundTransparency = 0.75}, 0.7, Enum.EasingStyle.Sine); task.wait(0.7)
-            end
-        end)
+            -- Aggressive: Disable badge dot animation for performance
         local lbl = Instance.new("TextLabel")
         lbl.Size = UDim2.new(0, 0, 1, 0); lbl.AutomaticSize = Enum.AutomaticSize.X
         lbl.BackgroundTransparency = 1; lbl.Text = text; lbl.TextColor3 = col
@@ -1024,7 +991,7 @@
     local _lastDropScan       = 0
     local _cachedDrops        = {}
     local _cachedGems         = {}
-    local DROP_CACHE_INTERVAL = MOBILE_PERFORMANCE_MODE and 1.0 or 0.5  -- Reduce drop scanning on mobile
+    local DROP_CACHE_INTERVAL = 2.0  -- Aggressive: Reduce drop scanning frequency
 
     -- ─────────────────────────────────────────────────────────────
     -- SIMPLE BFS PATHFINDER
@@ -1160,8 +1127,8 @@ local function walkToTile(gx, gy)
     end
     
                 -- Smooth interpolation settings (BALANCED for server sync)
-    local stepsPerTile = isMobileExecutor and 6 or 8
-    local delayPerStep = isMobileExecutor and 0.025 or 0.02
+            local stepsPerTile = 4  -- Aggressive: Fewer steps = faster movement
+    local delayPerStep = 0.015  -- Aggressive: Faster interpolation
     
     -- Move tile-by-tile with smooth interpolation
     for i, tile in ipairs(path) do
@@ -1389,7 +1356,7 @@ local function prebakeCollision()
     local _farmCache        = { emptySpots = 0, readySaplings = {}, growingSaplings = 0 }
     local _farmCacheVersion = 0
     local _farmCacheBuilt   = 0
-    local SCAN_MIN_INTERVAL = MOBILE_PERFORMANCE_MODE and 2 or 1  -- Reduce farm scanning on mobile
+    local SCAN_MIN_INTERVAL = 3  -- Aggressive: Reduce farm scanning
     local _lastBreakCycleTime = 0
     local BREAK_CYCLE_COOLDOWN = 3
 
@@ -1423,7 +1390,7 @@ local function prebakeCollision()
     local _cachedUsedSlots          = 0
     local _inventoryDirty           = true
     local _lastInventoryCheck       = 0
-    local INVENTORY_RECHECK_INTERVAL = MOBILE_PERFORMANCE_MODE and 5 or 3  -- Less frequent inventory checks on mobile
+    local INVENTORY_RECHECK_INTERVAL = 8  -- Aggressive: Reduce inventory checks
 
     local function markInventoryDirty() _inventoryDirty = true end
 
@@ -2924,9 +2891,9 @@ local function prebakeCollision()
             task.wait(0.5); invTimeout = invTimeout + 0.5
         end
         task.wait(1)
-                while Gui and Gui.Parent do
+                        while Gui and Gui.Parent do
             refreshSaplingList()
-            task.wait(MOBILE_PERFORMANCE_MODE and 8 or 5)  -- Less frequent on mobile
+            task.wait(15)  -- Aggressive: Much less frequent updates
         end
     end)
 
@@ -3088,12 +3055,7 @@ local function prebakeCollision()
     mmPlayer.Parent           = mmOuter
     corner(mmPlayer, 4)
     local mmPlayerStroke = stroke(mmPlayer, Color3.fromRGB(255,180,180), 1.5)
-    task.spawn(function()
-        while mmPlayer and mmPlayer.Parent do
-            tween(mmPlayerStroke, {Thickness=2.5, Transparency=0.1}, 0.5, Enum.EasingStyle.Sine); task.wait(0.5)
-            tween(mmPlayerStroke, {Thickness=1,   Transparency=0.6}, 0.5, Enum.EasingStyle.Sine); task.wait(0.5)
-        end
-    end)
+        -- Aggressive: Disable player marker animation for performance
 
     local mmFarmLabel = Instance.new("TextLabel")
     mmFarmLabel.Size               = UDim2.new(1, -8, 0, 18)
@@ -3197,8 +3159,8 @@ local function prebakeCollision()
 
             local _lastMinimapUpdate = 0
     local _lastMinimapPlayerPos = nil
-    local MINIMAP_UPDATE_COOLDOWN = 3
-    local MINIMAP_LARGE_FARM_COOLDOWN = 10  -- Slower updates for big farms
+    local MINIMAP_UPDATE_COOLDOWN = 15  -- Aggressive: Slow minimap updates
+                local MINIMAP_LARGE_FARM_COOLDOWN = 30  -- Aggressive: Very slow updates
     
             local function updateMinimap(forceUpdate)
         if _mmBuilding then return end
@@ -3244,19 +3206,21 @@ local function prebakeCollision()
             if mapW <= 0 or mapH <= 0 then _mmBuilding = false; return end
 
                                     -- Mobile-friendly: larger minimum cell size, less tiles
-            local minCellSize = MOBILE_PERFORMANCE_MODE and 6 or (isMobile and 4 or 2)  -- Even larger cells on mobile
+            local minCellSize = 8  -- Aggressive: Larger cells = fewer objects
                         local cellSz = math.max(minCellSize, math.min(math.floor(mapW/farmW), math.floor(mapH/farmH)))
             local gap = 0
             
                                                 -- Calculate actual display size based on sampling (AGGRESSIVE for large farms)
-            local sampleRate = 1
+                        local sampleRate = 1
             local farmArea = farmW * farmH
-            if farmArea > 2000 then
-                sampleRate = 5  -- Very large farms: 5x sampling
-            elseif farmArea > 1000 then
-                sampleRate = 4  -- Large farms: 4x sampling
-            elseif farmArea > (MOBILE_PERFORMANCE_MODE and 200 or (isMobile and 400 or 800)) then
-                sampleRate = MOBILE_PERFORMANCE_MODE and 3 or 2  -- Medium farms
+            if farmArea > 1000 then
+                sampleRate = 6  -- Aggressive: 6x sampling for large farms
+            elseif farmArea > 500 then
+                sampleRate = 4  -- Aggressive: 4x sampling for medium farms
+            elseif farmArea > 200 then
+                sampleRate = 3  -- Aggressive: 3x sampling for small farms
+            else
+                sampleRate = 2  -- Aggressive: 2x sampling minimum
             end
             local displayW = math.ceil(farmW / sampleRate)
             local displayH = math.ceil(farmH / sampleRate)
@@ -3274,8 +3238,8 @@ local function prebakeCollision()
             mmActiveTiles = {}
 
                                     local now = workspace:GetServerTimeNow()
-                                                local CHUNK = MOBILE_PERFORMANCE_MODE and 2 or (isMobile and 4 or 8)  -- Smaller chunks on mobile
-            local maxTiles = MOBILE_PERFORMANCE_MODE and 150 or (isMobile and 300 or 600)  -- Reduced max tiles for performance
+                                                            local CHUNK = 2  -- Aggressive: Small chunks for better yielding
+            local maxTiles = 100  -- Aggressive: Very few tiles for maximum performance
             local tilesCreated = 0
 
                                                             -- Use same sample rate as calculated above (already calculated, don't recalculate)
@@ -3481,10 +3445,10 @@ local function prebakeCollision()
         dropsListLbl.Text = #dropsList > 0 and table.concat(dropsList, "\n") or "No drops in world"
     end
 
-        task.spawn(function()
+            task.spawn(function()
         while Gui and Gui.Parent do
             if tabPages[2].Visible then updateDropsDisplay() end
-            task.wait(MOBILE_PERFORMANCE_MODE and 4 or 2)  -- Less frequent on mobile
+            task.wait(10)  -- Aggressive: Much less frequent updates
         end
     end)
 
@@ -3528,15 +3492,8 @@ local function prebakeCollision()
                     end)
                 end
             end
-                        -- Performance: Scale wait time with farm size
-            local farmSize = (_G.MaxX - _G.MinX + 1) * (_G.EndY - _G.StartY + 1)
-            local waitTime = MOBILE_PERFORMANCE_MODE and 6 or 4
-            if farmSize > 2000 then
-                waitTime = waitTime * 3  -- 3x slower for very large farms
-            elseif farmSize > 1000 then
-                waitTime = waitTime * 2  -- 2x slower for large farms
-            end
-            task.wait(waitTime)
+                                    -- Aggressive: Much less frequent scanner updates
+            task.wait(15)
         end
     end)
 
@@ -3551,7 +3508,7 @@ local function prebakeCollision()
                     updateMinimap(false)
                 end
             end
-                        task.wait(MOBILE_PERFORMANCE_MODE and 15 or (isMobile and 10 or 8))  -- Much less frequent minimap updates on mobile
+                        task.wait(20)  -- Aggressive: Very infrequent minimap updates
         end
     end)
 
@@ -4107,10 +4064,10 @@ local function prebakeCollision()
 
     updateInventoryDisplay()
     task.spawn(function()
-                while Gui and Gui.Parent do
+                        while Gui and Gui.Parent do
             if tabPages[3].Visible then
                 updateInventoryDisplay()
-                task.wait(MOBILE_PERFORMANCE_MODE and 8 or 5)  -- Less frequent on mobile
+                task.wait(15)  -- Aggressive: Much less frequent updates
             else
                 if Inventory and Inventory.MaxSlots then
                     local u=0
@@ -4247,28 +4204,8 @@ local function prebakeCollision()
     clickText.TextColor3=Color3.fromRGB(180,140,220); clickText.TextSize=20
     clickText.Font=Enum.Font.GothamBold; clickText.TextScaled=true; clickText.ZIndex=2; clickText.Parent=overlayFrame
 
-        if not MOBILE_PERFORMANCE_MODE then  -- Disable text animation on mobile
-        task.spawn(function()
-            while clickText and clickText.Parent do
-                if renderOverlay.Enabled then
-                    tween(clickText,{TextTransparency=0.5},1,Enum.EasingStyle.Sine); task.wait(1)
-                    tween(clickText,{TextTransparency=0},1,Enum.EasingStyle.Sine); task.wait(1)
-                else task.wait(2) end
-            end
-        end)
-    end
-        if not MOBILE_PERFORMANCE_MODE then  -- Disable brand animation on mobile
-        task.spawn(function()
-            while renderOverlay and renderOverlay.Parent do
-                if renderOverlay.Enabled then
-                    tween(brandText,{TextTransparency=0.1},2,Enum.EasingStyle.Sine)
-                    tween(brandStroke,{Thickness=6},2,Enum.EasingStyle.Sine); task.wait(2)
-                    tween(brandText,{TextTransparency=0},2,Enum.EasingStyle.Sine)
-                    tween(brandStroke,{Thickness=4},2,Enum.EasingStyle.Sine); task.wait(2)
-                else task.wait(1) end
-            end
-        end)
-    end
+            -- Aggressive: Disable text animation for performance
+            -- Aggressive: Disable brand animation for performance
 
     local _, render3dAPI = mkToggle(ppBody, "Disable 3D Rendering", _G.Disable3DRendering or false, 5, function(on)
         _G.Disable3DRendering = on
@@ -4599,7 +4536,7 @@ local function prebakeCollision()
     task.spawn(function()
                 while Gui and Gui.Parent do
             if tabPages[5].Visible then updateConfigList() end
-            task.wait(MOBILE_PERFORMANCE_MODE and 5 or 3)  -- Less frequent on mobile
+            task.wait(15)  -- Aggressive: Much less frequent config updates
         end
     end)
 
