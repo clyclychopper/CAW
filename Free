@@ -1252,8 +1252,8 @@ end
         tileCacheVersion = tileCacheVersion + 1
     end
     
-    local function cleanupCaches()
-        -- Clear tile cache outside farm area to prevent memory bloat
+        local function cleanupCaches()
+        -- AGGRESSIVE: Clear tile cache outside farm area to prevent memory bloat
         local minX = (_G.MinX or 0) - 15
         local maxX = (_G.MaxX or 50) + 15
         local minY = (_G.StartY or 0) - 15
@@ -1269,20 +1269,38 @@ end
             end
         end
         
-        -- Limit itemDataCache size (keep only recent 200 items)
+        -- AGGRESSIVE: Limit itemDataCache size (keep only 100 items for performance)
         local cacheSize = 0
         for _ in pairs(itemDataCache) do cacheSize = cacheSize + 1 end
-        if cacheSize > 200 then
+        if cacheSize > 100 then
             local toRemove = {}
             local count = 0
             for id in pairs(itemDataCache) do
                 count = count + 1
-                if count > 150 then table.insert(toRemove, id) end
+                if count > 75 then table.insert(toRemove, id) end
             end
             for _, id in ipairs(toRemove) do itemDataCache[id] = nil end
         end
         
-                -- Note: collectgarbage is restricted in Roblox, skip GC
+        -- AGGRESSIVE: Clear drop/gem caches to prevent accumulation
+        _cachedDrops = {}
+        _cachedGems = {}
+        
+        -- AGGRESSIVE: Clear minimap tile pool if too large
+        if #mmTilePool > 200 then
+            for i = 201, #mmTilePool do
+                if mmTilePool[i] then
+                    pcall(function() mmTilePool[i]:Destroy() end)
+                end
+            end
+            local newPool = {}
+            for i = 1, 200 do
+                newPool[i] = mmTilePool[i]
+            end
+            mmTilePool = newPool
+        end
+        
+        -- Note: collectgarbage is restricted in Roblox, skip GC
     end
 
     -- OPTIMIZED: Bake farm area + drop zones
@@ -1564,21 +1582,26 @@ local function prebakeCollision()
         return false
     end
 
-    local function placeBlock(x, y, blockID)
+        local function placeBlock(x, y, blockID)
         local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerPlaceItem")
         if not remote or not blockID then return false end
         for slot = 1, Inventory.MaxSlots do
             local stack = Inventory.Stacks[slot]
             if stack and stack.Id == blockID then
-                for attempt = 1, 3 do
-                    remote:FireServer(Vector2.new(x, y), slot)
-                    task.wait(0.2)
+                -- FAST: Spam placement with latency tolerance
+                for attempt = 1, 5 do
+                    pcall(function() remote:FireServer(Vector2.new(x, y), slot) end)
+                    task.wait(0.05)  -- Very fast spam
+                    
+                    -- Check if placed (latency-tolerant)
                     if WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2) then
                         tileCache[x * 10000 + y] = true
                         markInventoryDirty()
                         return true
                     end
                 end
+                
+                -- Final check with extra time for latency
                 task.wait(0.3)
                 if WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2) then
                     tileCache[x * 10000 + y] = true
@@ -1591,10 +1614,10 @@ local function prebakeCollision()
         return false
     end
 
-    local function harvestSapling(x, y)
+        local function harvestSapling(x, y)
         local remote = game.ReplicatedStorage.Remotes:FindFirstChild("PlayerFist")
         if not remote then return false end
-                                                -- Stabilize position once before harvesting (ULTRA FAST)
+                                                -- Stabilize position once before harvesting
         if movement then
             movement.Grounded = true
             movement.VelocityX = 0
@@ -1603,25 +1626,28 @@ local function prebakeCollision()
             task.wait(0.05)
         end
         
-        local pos   = Vector2.new(x, y)
-        local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-        local delay   = isMob and 0.15 or 0.08
-        local maxHits = isMob and 10 or 8
+        local pos = Vector2.new(x, y)
+        local maxHits = 15  -- FAST: More hits, faster spam
+        local delay = 0.04  -- FAST: Very quick hits
         
         for hit = 1, maxHits do
             if not PTHT_Running or not _G.AutoPTHT then return false end
+            
+            -- Latency-tolerant: Check if already broken
             if not (WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)) then
                 tileCache[x * 10000 + y] = false
                 markInventoryDirty()
                 return true
             end
             
-            if hit % 3 == 0 then kickWatchdog() end
+            if hit % 5 == 0 then kickWatchdog() end
             
             pcall(function() remote:FireServer(pos) end)
             task.wait(delay)
         end
-        task.wait(isMob and 0.15 or 0.1)
+        
+        -- Latency-tolerant: Final check with extra time
+        task.wait(0.2)
         if not (WorldManager.GetTile(x, y, 1) or WorldManager.GetTile(x, y, 2)) then
             tileCache[x * 10000 + y] = false
             markInventoryDirty()
@@ -2039,8 +2065,8 @@ local function prebakeCollision()
             -- If all broken, exit early
             if allBroken then break end
             
-            -- BURST MODE: Spam all unbroken blocks rapidly (4-6 hits per block)
-            local hitsPerBlock = UserInputService.TouchEnabled and 4 or 6
+                        -- ULTRA BURST MODE: Maximum spam with latency tolerance
+            local hitsPerBlock = 10  -- FAST: More hits for faster breaking
             for hit = 1, hitsPerBlock do
                 if not PTHT_Running or not _G.AutoPTHT then break end
                 
@@ -2049,15 +2075,13 @@ local function prebakeCollision()
                     pcall(function() remote:FireServer(Vector2.new(tile.x, tile.y)) end)
                 end
                 
-                -- Tiny delay between burst rounds (not between individual blocks)
-                task.wait(0.02)
+                -- FAST: Minimal delay between burst rounds
+                task.wait(0.01)
             end
             
-                        -- Small delay between full cycles (use breakSpeed from slider)
-            local isMob = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-            local baseDelay = isMob and 0.12 or 0.08
+                                    -- FAST: Minimal delay between cycles
             local breakSpeedMultiplier = (101 - (tonumber(_G.BreakSpeed) or 50)) / 200
-            task.wait(baseDelay * breakSpeedMultiplier)
+            task.wait(0.05 * breakSpeedMultiplier)
         end
         
                 _lastBreakCycleTime = safeGetServerTime()
@@ -2261,8 +2285,9 @@ local function prebakeCollision()
 
                         local _lastScanTime = 0
             local _stuckDetection = {lastPhase = nil, phaseStartTime = 0, samePhaseCount = 0}
-            local _lastCacheCleanup = os.clock()
-            local CACHE_CLEANUP_INTERVAL = 300  -- Clean caches every 5 minutes
+                        local _lastCacheCleanup = os.clock()
+            local CACHE_CLEANUP_INTERVAL = 180  -- AGGRESSIVE: Clean caches every 3 minutes
+            local _cycleCount = 0  -- Track cycles for micro-cleanup
 
             while PTHT_Running and _G.AutoPTHT do
                 kickWatchdog()
@@ -2383,11 +2408,23 @@ local function prebakeCollision()
                     _stuckDetection.samePhaseCount = 0
                 end
                 
-                -- Periodic cache cleanup for long sessions
+                                -- AGGRESSIVE: Periodic cache cleanup for long sessions
                 if (os.clock() - _lastCacheCleanup) > CACHE_CLEANUP_INTERVAL then
                     print("[YSHub] Periodic maintenance: Cleaning caches...")
                     cleanupCaches()
                     _lastCacheCleanup = os.clock()
+                end
+                
+                -- AGGRESSIVE: Micro-cleanup every 50 cycles to prevent accumulation
+                _cycleCount = _cycleCount + 1
+                if _cycleCount >= 50 then
+                    _cycleCount = 0
+                    -- Clear temporary tables
+                    if #readySaplings > 100 then readySaplings = {} end
+                    -- Force farm cache refresh to prevent stale data
+                    if _farmCacheBuilt < _farmCacheVersion - 10 then
+                        invalidateFarmCache()
+                    end
                 end
 
 
@@ -2624,8 +2661,8 @@ local function prebakeCollision()
                     end
                 end
 
-                                -- Safety: Ensure we don't loop too fast
-                task.wait(0.1)
+                                                                -- AGGRESSIVE: Minimal wait to prevent tight loops
+                task.wait(0.05)
                 RunService.Heartbeat:Wait()
             end
             
@@ -3128,9 +3165,9 @@ local function prebakeCollision()
     mkLegendItem(Color3.fromRGB(12,   28,  36), "Empty")
     mkLegendItem(T.red,                          "You")
 
-    local mmTilePool    = {}
+        local mmTilePool    = {}
     local mmActiveTiles = {}
-    local MM_POOL_MAX   = 400
+    local MM_POOL_MAX   = 200  -- AGGRESSIVE: Smaller pool to prevent memory bloat
 
     local function acquireTile()
         if #mmTilePool > 0 then
@@ -3142,12 +3179,12 @@ local function prebakeCollision()
         return t
     end
 
-    local function releaseTile(t)
+        local function releaseTile(t)
         t.Visible = false
         if #mmTilePool < MM_POOL_MAX then
             table.insert(mmTilePool, t)
         else
-            t:Destroy()
+            pcall(function() t:Destroy() end)  -- Safe destroy
         end
     end
 
