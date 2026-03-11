@@ -2602,10 +2602,13 @@ local function prebakeCollision()
                     end
                 end
 
-                                                                -- SAFETY: Ensure farm cache values are never nil
+                                                                                                                                -- SAFETY: Ensure farm cache values are never nil
                 local emptySpots      = _farmCache.emptySpots or 0
                 local readySaplings   = _farmCache.readySaplings or {}
                 local growingSaplings = _farmCache.growingSaplings or 0
+                
+                -- DEBUG: Show what we got from cache
+                print("[DEBUG] Cache values - Empty:", emptySpots, "Ready:", #readySaplings, "Growing:", growingSaplings)
                 
                                                                                 -- DISABLED: Stuck detection was causing false positives and stopping the bot
                 -- The drop collection deduplication fix resolves the underlying issue
@@ -2655,8 +2658,8 @@ local function prebakeCollision()
                       end
                 end
 
-                                                                -- Priority 1: Harvest ready saplings
-                if #readySaplings > 0 then
+                                                                                                -- Priority 1: Harvest ready saplings
+                if readySaplings and #readySaplings > 0 then
                     print("[DEBUG] → Priority 1: HARVESTING", #readySaplings, "saplings")
                                           -- Phase: HARVESTING
                       task.wait(0.2)
